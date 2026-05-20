@@ -6,3 +6,9 @@ rgbd-unsupervised
 baseline
 *_Results
 sequences
+data/
+pretrained_models/
+output/
+models/checkpoints/
+models/logs/
+*.log
