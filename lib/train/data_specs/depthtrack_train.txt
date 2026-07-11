@@ -144,3 +144,7 @@ trashbin_indoor
 tree_wild
 trophy_indoor
 ukulele02_indoor
+toiletpaper01_indoor
+bottle04_indoor
+ball10_wild
+cartman_robotarm_lab_noocc_1

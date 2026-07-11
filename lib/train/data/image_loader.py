@@ -1,8 +1,11 @@
+import logging
+
 import jpeg4py
 import cv2 as cv
 from PIL import Image
 import numpy as np
 
+_logger = logging.getLogger(__name__)
 davis_palette = np.repeat(np.expand_dims(np.arange(0,256), 1), 3, 1).astype(np.uint8)
 davis_palette[:22, :] = [[0, 0, 0], [128, 0, 0], [0, 128, 0], [128, 128, 0],
                          [0, 0, 128], [128, 0, 128], [0, 128, 128], [128, 128, 128],
@@ -20,7 +23,7 @@ def default_image_loader(path):
         im = jpeg4py_loader(path)
         if im is None:
             default_image_loader.use_jpeg4py = False
-            print('Using opencv_loader instead.')
+            _logger.warning("Using opencv_loader instead.")
         else:
             default_image_loader.use_jpeg4py = True
             return im
@@ -36,8 +39,7 @@ def jpeg4py_loader(path):
     try:
         return jpeg4py.JPEG(path).decode()
     except Exception as e:
-        print('ERROR: Could not read image "{}"'.format(path))
-        print(e)
+        _logger.error('Could not read image "%s": %s', path, e)
         return None
 
 
@@ -49,8 +51,7 @@ def opencv_loader(path):
         # convert to rgb and return
         return cv.cvtColor(im, cv.COLOR_BGR2RGB)
     except Exception as e:
-        print('ERROR: Could not read image "{}"'.format(path))
-        print(e)
+        _logger.error('Could not read image "%s": %s', path, e)
         return None
 
 
@@ -65,8 +66,7 @@ def jpeg4py_loader_w_failsafe(path):
             # convert to rgb and return
             return cv.cvtColor(im, cv.COLOR_BGR2RGB)
         except Exception as e:
-            print('ERROR: Could not read image "{}"'.format(path))
-            print(e)
+            _logger.error('Could not read image "%s": %s', path, e)
             return None
 
 
@@ -75,8 +75,7 @@ def opencv_seg_loader(path):
     try:
         return cv.imread(path)
     except Exception as e:
-        print('ERROR: Could not read image "{}"'.format(path))
-        print(e)
+        _logger.error('Could not read image "%s": %s', path, e)
         return None
 
 

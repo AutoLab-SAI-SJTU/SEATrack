@@ -28,12 +28,21 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from timm.data import IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD, IMAGENET_INCEPTION_MEAN, IMAGENET_INCEPTION_STD
-from timm.models.helpers import build_model_with_cfg, named_apply, adapt_input_conv
-from timm.models.layers import Mlp, DropPath, trunc_normal_, lecun_normal_
-from timm.models.registry import register_model
+from lib.models.layers.timm_compat import (
+    DropPath,
+    Mlp,
+    adapt_input_conv,
+    build_model_with_cfg,
+    lecun_normal_,
+    named_apply,
+    register_model,
+    trunc_normal_,
+)
 
 from lib.models.layers.patch_embed import PatchEmbed
 from lib.models.seatrack.base_backbone import BaseBackbone
+
+_logger = logging.getLogger(__name__)
 
 
 class Attention(nn.Module):
@@ -219,8 +228,10 @@ def _init_vit_weights(module: nn.Module, name: str = '', head_bias: float = 0., 
         if module.bias is not None:
             nn.init.zeros_(module.bias)
     elif isinstance(module, (nn.LayerNorm, nn.GroupNorm, nn.BatchNorm2d)):
-        nn.init.zeros_(module.bias)
-        nn.init.ones_(module.weight)
+        if module.bias is not None:
+            nn.init.zeros_(module.bias)
+        if module.weight is not None:
+            nn.init.ones_(module.weight)
 
 
 @torch.no_grad()
@@ -306,7 +317,7 @@ def _load_weights(model: VisionTransformer, checkpoint_path: str, prefix: str = 
 def resize_pos_embed(posemb, posemb_new, num_tokens=1, gs_new=()):
     # Rescale the grid of position embeddings when loading from state_dict. Adapted from
     # https://github.com/google-research/vision_transformer/blob/00883dd691c63a6830751563748663526e811cee/vit_jax/checkpoint.py#L224
-    print('Resized position embedding: %s to %s', posemb.shape, posemb_new.shape)
+    _logger.info("Resized position embedding: %s to %s", posemb.shape, posemb_new.shape)
     ntok_new = posemb_new.shape[1]
     if num_tokens:
         posemb_tok, posemb_grid = posemb[:, :num_tokens], posemb[0, num_tokens:]
@@ -317,7 +328,7 @@ def resize_pos_embed(posemb, posemb_new, num_tokens=1, gs_new=()):
     if not len(gs_new):  # backwards compatibility
         gs_new = [int(math.sqrt(ntok_new))] * 2
     assert len(gs_new) >= 2
-    print('Position embedding grid-size from %s to %s', [gs_old, gs_old], gs_new)
+    _logger.info("Position embedding grid-size from %s to %s", [gs_old, gs_old], gs_new)
     posemb_grid = posemb_grid.reshape(1, gs_old, gs_old, -1).permute(0, 3, 1, 2)
     posemb_grid = F.interpolate(posemb_grid, size=gs_new, mode='bilinear')
     posemb_grid = posemb_grid.permute(0, 2, 3, 1).reshape(1, gs_new[0] * gs_new[1], -1)
@@ -354,9 +365,9 @@ def _create_vision_transformer(variant, pretrained=False, default_cfg=None, **kw
         if 'npz' in pretrained:
             model.load_pretrained(pretrained, prefix='')
         else:
-            checkpoint = torch.load(pretrained, map_location="cpu")
+            checkpoint = torch.load(pretrained, map_location="cpu", weights_only=False)
             missing_keys, unexpected_keys = model.load_state_dict(checkpoint["model"], strict=False)
-            print('Load pretrained model from: ' + pretrained)
+            _logger.info("Loaded pretrained model from %s", pretrained)
 
     return model
 

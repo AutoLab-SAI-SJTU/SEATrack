@@ -8,7 +8,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from timm.models.layers import to_2tuple
+from lib.models.layers.timm_compat import to_2tuple
 
 from lib.models.layers.patch_embed import PatchEmbed
 from .utils import combine_tokens, recover_tokens
@@ -200,9 +200,9 @@ def _create_vision_transformer(pretrained=False, **kwargs):
         if 'npz' in pretrained:
             model.load_pretrained(pretrained, prefix='')
         else:
-            checkpoint = torch.load(pretrained, map_location="cpu")
+            checkpoint = torch.load(pretrained, map_location="cpu", weights_only=False)
             missing_keys, unexpected_keys = model.load_state_dict(checkpoint["model"], strict=False)
-            print('Load pretrained model from: ' + pretrained)
+            _logger.info("Loaded pretrained model from %s", pretrained)
 
     return model
 

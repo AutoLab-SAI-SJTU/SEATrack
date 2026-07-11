@@ -12,6 +12,7 @@ from torch.nn.modules.transformer import _get_clones
 from lib.models.layers.head import build_box_head
 from lib.models.seatrack.vit import vit_base_patch16_224
 from lib.models.seatrack.vit_ce import vit_large_patch16_224_ce, vit_base_patch16_224_ce
+from lib.train.admin.logging_utils import get_train_logger
 from lib.utils.box_ops import box_xyxy_to_cxcywh
 
 
@@ -92,7 +93,8 @@ class OSTrack(nn.Module):
             raise NotImplementedError
 
 
-def build_ostrack(cfg, training=True):
+def build_ostrack(cfg, training=True, settings=None):
+    model_logger = get_train_logger(settings, "model")
     current_dir = os.path.dirname(os.path.abspath(__file__))  # This is your Project Root
     pretrained_path = os.path.join(current_dir, '../../../pretrained_models')
     if cfg.MODEL.PRETRAIN_FILE and ('OSTrack' not in cfg.MODEL.PRETRAIN_FILE) and training:
@@ -127,7 +129,7 @@ def build_ostrack(cfg, training=True):
 
     backbone.finetune_track(cfg=cfg, patch_start_index=patch_start_index)
 
-    box_head = build_box_head(cfg, hidden_dim)
+    box_head = build_box_head(cfg, hidden_dim, settings=settings)
 
     model = OSTrack(
         backbone,
@@ -137,8 +139,10 @@ def build_ostrack(cfg, training=True):
     )
 
     if 'OSTrack' in cfg.MODEL.PRETRAIN_FILE and training:
-        checkpoint = torch.load(cfg.MODEL.PRETRAIN_FILE, map_location="cpu")
+        checkpoint = torch.load(cfg.MODEL.PRETRAIN_FILE, map_location="cpu", weights_only=False)
         missing_keys, unexpected_keys = model.load_state_dict(checkpoint["net"], strict=False)
-        print('Load pretrained model from: ' + cfg.MODEL.PRETRAIN_FILE)
+        model_logger.info("Loaded pretrained model from %s", cfg.MODEL.PRETRAIN_FILE)
+        model_logger.info("Missing keys: %s", missing_keys)
+        model_logger.info("Unexpected keys: %s", unexpected_keys)
 
     return model

@@ -39,21 +39,22 @@ class VOT(object):
         else:
             raise Exception('Illegal configuration {}.'.format(channels))
 
-        self._trax = trax.Server([region_format], [trax.Image.PATH], channels, customMetadata=dict(vot="python"))
+        self._trax = trax.Server([region_format], [trax.Image.PATH], channels, metadata=dict(vot="python"))
 
         request = self._trax.wait()
         assert(request.type == 'initialize')
-        if isinstance(request.region, trax.Polygon):
-            self._region = Polygon([Point(x[0], x[1]) for x in request.region])
-        elif isinstance(request.region, trax.Mask):
-            self._region = request.region.array(True)
+        region = request.objects[0][0]
+        if isinstance(region, trax.Polygon):
+            self._region = Polygon([Point(x[0], x[1]) for x in region])
+        elif isinstance(region, trax.Mask):
+            self._region = region.array(True)
         else:
-            self._region = Rectangle(*request.region.bounds())
+            self._region = Rectangle(*region.bounds())
         self._image = [x.path() for k, x in request.image.items()]
         if len(self._image) == 1:
             self._image = self._image[0]
 
-        self._trax.status(request.region)
+        self._trax.status([(region, {})])
 
     def region(self):
         """
@@ -81,7 +82,7 @@ class VOT(object):
         properties = {}
         if not confidence is None:
             properties['confidence'] = confidence
-        self._trax.status(tregion, properties)
+        self._trax.status([(tregion, properties)])
 
     def frame(self):
         """

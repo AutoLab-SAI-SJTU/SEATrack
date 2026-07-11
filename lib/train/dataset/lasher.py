@@ -34,9 +34,10 @@ class LasHeR(BaseVideoDataset):
             data_fraction - Fraction of dataset to be used. The complete dataset is used by default
         """
         root = env_settings().lasher_dir if root is None else root
-        assert split in ['train', 'val','all'], 'Only support all, train or val split in LasHeR, got {}'.format(split)
+        assert split in ['train', 'val', 'all', 'smoke'], 'Only support all, train, val, or smoke split in LasHeR, got {}'.format(split)
         super().__init__('LasHeR', root)
         self.dtype = dtype
+        self._frame_start_cache = {}
         # all folders inside the root
         self.sequence_list = self._get_sequence_list(split)
 
@@ -84,13 +85,81 @@ class LasHeR(BaseVideoDataset):
         visible = valid.clone().byte()
         return {'bbox': bbox, 'valid': valid, 'visible': visible}
 
+    @staticmethod
+    def _modality_tokens(modality):
+        if modality == 'visible':
+            return ('', 'v', 'visible'), ('', 'v')
+        return ('', 'i', 'infrared'), ('', 'i')
+
+    @classmethod
+    def _frame_name_candidates(cls, frame_id, modality):
+        prefixes, suffixes = cls._modality_tokens(modality)
+
+        candidates = []
+        for prefix in prefixes:
+            for suffix in suffixes:
+                for width in (0, 4, 5, 6, 8):
+                    number = str(frame_id) if width == 0 else '{:0{}d}'.format(frame_id, width)
+                    candidates.append('{}{}{}.jpg'.format(prefix, number, suffix))
+        return list(dict.fromkeys(candidates))
+
+    @classmethod
+    def _parse_frame_id(cls, frame_name, modality):
+        stem, ext = os.path.splitext(frame_name)
+        if ext.lower() != '.jpg':
+            return None
+
+        prefixes, suffixes = cls._modality_tokens(modality)
+        for prefix in prefixes:
+            if prefix and not stem.startswith(prefix):
+                continue
+            prefix_stripped = stem[len(prefix):] if prefix else stem
+            for suffix in suffixes:
+                if suffix and not prefix_stripped.endswith(suffix):
+                    continue
+                number = prefix_stripped[:-len(suffix)] if suffix else prefix_stripped
+                if number.isdigit():
+                    return int(number)
+        return None
+
+    def _get_frame_start_index(self, frame_dir, modality):
+        cache_key = (frame_dir, modality)
+        if cache_key not in self._frame_start_cache:
+            frame_ids = [
+                frame_id for frame_id in
+                (self._parse_frame_id(frame_name, modality) for frame_name in os.listdir(frame_dir))
+                if frame_id is not None
+            ]
+            self._frame_start_cache[cache_key] = min(frame_ids) if frame_ids else 0
+        return self._frame_start_cache[cache_key]
+
+    def _find_exact_frame(self, frame_dir, frame_id, modality):
+        for frame_name in self._frame_name_candidates(frame_id, modality):
+            frame_path = os.path.join(frame_dir, frame_name)
+            if os.path.isfile(frame_path):
+                return frame_path
+        return None
+
+    def _get_frame_path_for_modality(self, seq_path, subdir, frame_id, modality):
+        frame_dir = os.path.join(seq_path, subdir)
+        target_frame_id = frame_id + self._get_frame_start_index(frame_dir, modality)
+
+        frame_path = self._find_exact_frame(frame_dir, target_frame_id, modality)
+        if frame_path is not None:
+            return frame_path
+
+        pattern = '*{}.jpg'.format(target_frame_id)
+        matches = sorted(glob.glob(os.path.join(frame_dir, pattern)))
+        if matches:
+            return matches[0]
+
+        raise FileNotFoundError(
+            'Could not find {} frame {} in {}'.format(modality, target_frame_id, frame_dir)
+        )
+
     def _get_frame_path(self, seq_path, frame_id):
-        # Note original filename is chaotic, we rename them
-        #rgb_frame_path1 = os.path.join(seq_path, 'visible', '{:06d}.jpg'.format(frame_id))  # frames start from 0
-        #ir_frame_path1 = os.path.join(seq_path, 'infrared', '{:06d}.jpg'.format(frame_id))
-        pattern = '*{}.jpg'.format(frame_id)
-        rgb_frame_path = glob.glob(os.path.join(seq_path, 'visible', pattern))[0]
-        ir_frame_path = glob.glob(os.path.join(seq_path, 'infrared', pattern))[0]
+        rgb_frame_path = self._get_frame_path_for_modality(seq_path, 'visible', frame_id, 'visible')
+        ir_frame_path = self._get_frame_path_for_modality(seq_path, 'infrared', frame_id, 'infrared')
         return (rgb_frame_path, ir_frame_path)  # jpg jpg
 
     def _get_frame(self, seq_path, frame_id):

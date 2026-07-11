@@ -33,13 +33,11 @@ def run_training(script_name, config_name, cudnn_benchmark=True, local_rank=-1, 
         cudnn_benchmark: Use cudnn benchmark or not (default is True).
     """
     if save_dir is None:
-        print("save_dir dir is not given. Use the default dir instead.")
+        save_dir = "./output"
     # This is needed to avoid strange crashes related to opencv
     cv.setNumThreads(0)
 
     torch.backends.cudnn.benchmark = cudnn_benchmark
-
-    print('script_name: {}.py  config_name: {}.yaml'.format(script_name, config_name))
 
     '''2021.1.5 set seed for different process'''
     if base_seed is not None:
@@ -53,6 +51,7 @@ def run_training(script_name, config_name, cudnn_benchmark=True, local_rank=-1, 
     settings.config_name = config_name
     # settings.project_path = 'train/{}/{}'.format(script_name, config_name)
     settings.project_path = config_name
+    settings.seed = 0 if base_seed is None else int(base_seed)
     if script_name_prv is not None and config_name_prv is not None:
         settings.project_path_prv = 'train/{}/{}'.format(script_name_prv, config_name_prv)
     settings.local_rank = local_rank
@@ -94,17 +93,21 @@ def main():
     parser.add_argument('--config_teacher', type=str, help='teacher yaml configure file name')
 
     args = parser.parse_args()
-    local_rank = int(os.environ["LOCAL_RANK"])
+    local_rank = int(os.environ.get("LOCAL_RANK", args.local_rank))
     if local_rank != -1:
         dist.init_process_group(backend='nccl')
         torch.cuda.set_device(local_rank)
     else:
         torch.cuda.set_device(0)
-    run_training(args.script, args.config, cudnn_benchmark=args.cudnn_benchmark,
-                 local_rank=local_rank, save_dir=args.save_dir, base_seed=args.seed,
-                 use_lmdb=args.use_lmdb, script_name_prv=args.script_prv, config_name_prv=args.config_prv,
-                 use_wandb=args.use_wandb,
-                 distill=args.distill, script_teacher=args.script_teacher, config_teacher=args.config_teacher)
+    try:
+        run_training(args.script, args.config, cudnn_benchmark=args.cudnn_benchmark,
+                     local_rank=local_rank, save_dir=args.save_dir, base_seed=args.seed,
+                     use_lmdb=args.use_lmdb, script_name_prv=args.script_prv, config_name_prv=args.config_prv,
+                     use_wandb=args.use_wandb,
+                     distill=args.distill, script_teacher=args.script_teacher, config_teacher=args.config_teacher)
+    finally:
+        if dist.is_available() and dist.is_initialized():
+            dist.destroy_process_group()
 
 
 if __name__ == '__main__':

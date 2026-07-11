@@ -52,6 +52,7 @@ from matplotlib.patches import Polygon
 import numpy as np
 import copy
 import itertools
+import logging
 from pycocotools import mask as maskUtils
 import os
 from collections import defaultdict
@@ -61,6 +62,8 @@ if PYTHON_VERSION == 2:
     from urllib import urlretrieve
 elif PYTHON_VERSION == 3:
     from urllib.request import urlretrieve
+
+_logger = logging.getLogger(__name__)
 
 
 def _isArrayLike(obj):
@@ -84,7 +87,7 @@ class COCO:
 
     def createIndex(self):
         # create index
-        print('creating index...')
+        _logger.info("Creating index")
         anns, cats, imgs = {}, {}, {}
         imgToAnns,catToImgs = defaultdict(list),defaultdict(list)
         if 'annotations' in self.dataset:
@@ -104,7 +107,7 @@ class COCO:
             for ann in self.dataset['annotations']:
                 catToImgs[ann['category_id']].append(ann['image_id'])
 
-        print('index created!')
+        _logger.info("Index created")
 
         # create class members
         self.anns = anns
@@ -119,7 +122,7 @@ class COCO:
         :return:
         """
         for key, value in self.dataset['info'].items():
-            print('{}: {}'.format(key, value))
+            _logger.info("%s: %s", key, value)
 
     def getAnnIds(self, imgIds=[], catIds=[], areaRng=[], iscrowd=None):
         """
@@ -295,7 +298,7 @@ class COCO:
             ax.add_collection(p)
         elif datasetType == 'captions':
             for ann in anns:
-                print(ann['caption'])
+                _logger.info("%s", ann['caption'])
 
     def loadRes(self, resFile):
         """
@@ -306,7 +309,7 @@ class COCO:
         res = COCO()
         res.dataset['images'] = [img for img in self.dataset['images']]
 
-        print('Loading and preparing results...')
+        _logger.info("Loading and preparing results")
         tic = time.time()
         if type(resFile) == str or (PYTHON_VERSION == 2 and type(resFile) == unicode):
             with open(resFile) as f:
@@ -353,7 +356,7 @@ class COCO:
                 ann['area'] = (x1-x0)*(y1-y0)
                 ann['id'] = id + 1
                 ann['bbox'] = [x0,y0,x1-x0,y1-y0]
-        print('DONE (t={:0.2f}s)'.format(time.time()- tic))
+        _logger.info("Done in %.2fs", time.time() - tic)
 
         res.dataset['annotations'] = anns
         res.createIndex()
@@ -367,7 +370,7 @@ class COCO:
         :return:
         '''
         if tarDir is None:
-            print('Please specify target directory')
+            _logger.warning("Please specify target directory")
             return -1
         if len(imgIds) == 0:
             imgs = self.imgs.values()
@@ -381,7 +384,7 @@ class COCO:
             fname = os.path.join(tarDir, img['file_name'])
             if not os.path.exists(fname):
                 urlretrieve(img['coco_url'], fname)
-            print('downloaded {}/{} images (t={:0.1f}s)'.format(i, N, time.time()- tic))
+            _logger.info("Downloaded %d/%d images in %.1fs", i, N, time.time() - tic)
 
     def loadNumpyAnnotations(self, data):
         """
@@ -389,15 +392,15 @@ class COCO:
         :param  data (numpy.ndarray)
         :return: annotations (python nested list)
         """
-        print('Converting ndarray to lists...')
+        _logger.info("Converting ndarray to lists")
         assert(type(data) == np.ndarray)
-        print(data.shape)
+        _logger.info("ndarray shape: %s", data.shape)
         assert(data.shape[1] == 7)
         N = data.shape[0]
         ann = []
         for i in range(N):
             if i % 1000000 == 0:
-                print('{}/{}'.format(i,N))
+                _logger.info("%d/%d", i, N)
             ann += [{
                 'image_id'  : int(data[i, 0]),
                 'bbox'  : [ data[i, 1], data[i, 2], data[i, 3], data[i, 4] ],

@@ -1,9 +1,10 @@
 import os
+import logging
 from collections import OrderedDict
 try:
     from torch.utils.tensorboard import SummaryWriter
 except:
-    print('WARNING: You are using tensorboardX instead sis you have a too old pytorch version.')
+    logging.getLogger(__name__).warning("Using tensorboardX because torch.utils.tensorboard is unavailable.")
     from tensorboardX import SummaryWriter
 
 

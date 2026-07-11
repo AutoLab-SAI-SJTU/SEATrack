@@ -3,6 +3,7 @@ import torch
 import torch.nn.functional as F
 
 from lib.models.layers.frozen_bn import FrozenBatchNorm2d
+from lib.train.admin.logging_utils import get_train_logger
 
 
 def conv(in_planes, out_planes, kernel_size=3, stride=1, padding=1, dilation=1,
@@ -221,7 +222,8 @@ class MLP(nn.Module):
         return x
 
 
-def build_box_head(cfg, hidden_dim):
+def build_box_head(cfg, hidden_dim, settings=None):
+    model_logger = get_train_logger(settings, "model")
     stride = cfg.MODEL.BACKBONE.STRIDE
 
     if cfg.MODEL.HEAD.TYPE == "MLP":
@@ -230,7 +232,7 @@ def build_box_head(cfg, hidden_dim):
     elif "CORNER" in cfg.MODEL.HEAD.TYPE:
         feat_sz = int(cfg.DATA.SEARCH.SIZE / stride)
         channel = getattr(cfg.MODEL, "NUM_CHANNELS", 256)
-        print("head channel: %d" % channel)
+        model_logger.info("Head channel: %d", channel)
         if cfg.MODEL.HEAD.TYPE == "CORNER":
             corner_head = Corner_Predictor(inplanes=cfg.MODEL.HIDDEN_DIM, channel=channel,
                                            feat_sz=feat_sz, stride=stride)

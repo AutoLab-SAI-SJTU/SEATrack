@@ -276,9 +276,12 @@ class ToGrayscale(TransformBase):
         if do_grayscale:
             if torch.is_tensor(image):
                 raise NotImplementedError('Implement torch variant.')
-            img_gray = cv.cvtColor(image, cv.COLOR_RGB2GRAY)
-            return np.stack([img_gray, img_gray, img_gray], axis=2)
-            # return np.repeat(np.sum(img * self.color_weights, axis=2, keepdims=True).astype(np.uint8), 3, axis=2)
+            if image.ndim != 3 or image.shape[2] not in (3, 6):
+                raise ValueError("ToGrayscale expects an HxWx3 or HxWx6 image")
+            groups = [image[..., index:index + 3] for index in range(0, image.shape[2], 3)]
+            gray_groups = [np.repeat(cv.cvtColor(group, cv.COLOR_RGB2GRAY)[..., None], 3, axis=2)
+                           for group in groups]
+            return np.concatenate(gray_groups, axis=2)
         return image
 
 
