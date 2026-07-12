@@ -73,8 +73,7 @@ def run_sequence(seq_name, seq_home, dataset_name, yaml_name, num_gpu=1, epoch=3
     # save_name = '{}'.format(yaml_name)
     save_folder = f'./RGBT_workspace/{variants}/{dataset_name}/'
     save_path = save_folder + seq_txt + '.txt'
-    if not os.path.exists(save_folder):
-        os.makedirs(save_folder)
+    os.makedirs(save_folder, exist_ok=True)
     if os.path.exists(save_path):
         print(f'-1 {seq_name}')
         return

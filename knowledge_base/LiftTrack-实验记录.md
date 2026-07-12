@@ -358,3 +358,275 @@ logs/lifttrack/pilot_20260712/pilot_summary.json
 新增的 seeds 1/2 三方法 30 个 checkpoint 与 seed-0 LiftTrack 5 个 checkpoint 均逐个加载审计：模型浮点 tensors 全部有限，epoch 编号正确，`rng_state` 完整包含 Python、NumPy、Torch 和 CUDA。seed-0 两条基线的 10 个 checkpoint 已在 11.1 节单独完成有限性审计。
 
 三种子门禁 `PASS`。保留首选 rank-8、layers `[5, 9]`，不运行 rank 16 或 layers `[7, 11]` 备选；允许启动 seed-0 60-epoch 正式训练。当前 pilot 只证明同预算验证 IoU 和效率，不替代正式 LasHeR/RGBT234 benchmark。
+
+## 13. Seed-0 60-Epoch 正式训练
+
+正式运行目录：
+
+```text
+/mnt/tipro4t/seatrack_train_runs/lifttrack_full_seed0_20260712_020400
+```
+
+运行使用 commit `16d188e5c0e6c91b325cb6bb195c7c6505bb48d1`、seed 0、rank 8、layers `[5, 9]`、batch 32、每轮 60,000 个 train/val samples、每 5 轮验证与保存，并将 GPU 功率上限保持为 550 W。可复现配置和预注册 benchmark 门槛记录在运行目录的 `run_manifest.yaml`。
+
+训练曾在 epoch 1 batch 950 后人工暂停，随后以 `SIGCONT` 原进程恢复。暂停时段污染 epoch 1 的累计时间与 FPS，但未重启进程、未重载 checkpoint，也未改变优化器状态或样本序列。恢复后完整跨入 epoch 2；epoch 2--4 的整轮训练时间分别为 `0:07:34.557077`、`0:07:34.174875` 和 `0:07:34.314869`。
+
+### 13.1 Epoch-5 Validation/Checkpoint 节点
+
+| 指标 | Clean baseline | LiftTrack | Lift - baseline |
+|---|---:|---:|---:|
+| train IoU | 0.72849 | 0.73253 | +0.00404 |
+| validation IoU | 0.74061 | 0.74033 | -0.00028 |
+| train epoch time | 0:11:02.696569 | 0:07:34.392275 | -31.4% |
+| validation epoch time | 0:04:58.384676 | 0:03:35.027691 | -27.9% |
+
+正式 epoch-5 validation 比同协议 clean baseline 低 `0.00028`，仍高于 pilot 预声明下限 `-0.002`，因此该节点不触发停止；这一结果不能单独证明正式精度提升，继续训练并按所有 validation 节点选择最佳权重。
+
+Checkpoint：
+
+```text
+/mnt/tipro4t/seatrack_train_runs/lifttrack_full_seed0_20260712_020400/checkpoints/rgbt_lifttrack/SEATrack_ep0005.pth.tar
+```
+
+文件大小为 372,666,631 bytes，SHA-256 为 `6cd7dd0f30c5465e68983df974d286b4d76003d97a9e60719e9a909ef1b64d0b`。加载审计确认 checkpoint epoch 为 5，250 个浮点模型 tensor 全部有限，`rng_state` 完整包含 Python、NumPy、Torch 和 CUDA 状态。相同 epoch 的 clean baseline checkpoint 为 378,185,557 bytes，LiftTrack 小 5,518,926 bytes（1.46%）。审计后训练自动进入 epoch 6。
+
+### 13.2 训练后数值可逆性
+
+从 epoch-5 checkpoint 分别加载 layer 5（forward coupling）与 layer 9（reverse coupling）的已训练 BiLift 权重，在 CPU float32 上对固定随机输入执行 `forward -> inverse`。layer 5 的 RGB/X 最大绝对恢复误差分别为 `4.7684e-7/2.3842e-7`，相对 L2 误差为 `3.8314e-8/2.0658e-8`；layer 9 的最大绝对误差为 `2.3842e-7/5.3644e-7`，相对 L2 误差为 `2.7619e-8/5.5297e-8`。因此两个方向的已训练耦合层均保持 float32 数值精度下的可逆性。
+
+### 13.3 Epoch-6--8 Train 进度
+
+| Epoch | 方法 | train loss | train IoU | epoch time |
+|---:|---|---:|---:|---:|
+| 6 | Clean baseline | 1.20700 | 0.73372 | 0:11:03.061632 |
+| 6 | LiftTrack | 1.19891 | 0.73484 | 0:07:34.492453 |
+| 7 | Clean baseline | 1.21548 | 0.73189 | 0:11:02.697799 |
+| 7 | LiftTrack | 1.17840 | 0.73829 | 0:07:34.637275 |
+| 8 | Clean baseline | 1.18995 | 0.73647 | 0:11:02.426803 |
+| 8 | LiftTrack | 1.17833 | 0.73845 | 0:07:34.523496 |
+
+LiftTrack 在 epoch 6 的 loss/IoU 相对 baseline 变化为 `-0.00809/+0.00112`，epoch 7 为 `-0.03708/+0.00640`，epoch 8 为 `-0.01162/+0.00198`。三轮训练时间分别缩短 `31.45%/31.44%/31.38%`。这些数据继续支持训练优化和效率优势，但属于 train split 证据，不替代 epoch-10 validation 或最终 LasHeR benchmark。训练已自动进入 epoch 9。
+
+### 13.4 BiLift 交换强度趋势与表述边界
+
+epoch 1--7 整轮最终诊断中，`x2r_update_ratio` 从 `0.10731` 增长到 `0.20792`，`r2x_update_ratio` 从 `0.13013` 增长到 `0.31589`，`difference_ratio` 从 `1.01863` 增长到 `1.07895`。同期损失持续下降、IoU 上升，并且输出和 checkpoint 审计未发现非有限值，因此当前证据支持 BiLift 学到了非平凡的双向补充更新，不支持数值发散判断。
+
+`r2x_update_ratio > x2r_update_ratio` 只表示 RGB 对 X 分支的相对更新更大，不能单独证明 RGB 更可靠或交换具有质量自适应性。`difference_ratio > 1` 表示交换后两分支差异范数略有扩大，因此不得将当前机制表述为“直接缩小模态差异”。当前可验证的方法表述是：可逆、低秩、非平凡的双向补充交换。“可靠性自适应”必须等待受控模态退化实验证据。
+
+epoch 8 的最终 `x2r/r2x/difference_ratio` 为 `0.20697/0.31927/1.08087`，相比 epoch 7 的 `0.20792/0.31589/1.07895` 基本稳定，没有继续单调放大。
+
+### 13.5 Epoch-10 Validation/Checkpoint 节点
+
+| 指标 | Clean baseline | LiftTrack | Lift - baseline |
+|---|---:|---:|---:|
+| train loss | 1.16808 | 1.16786 | -0.00022 |
+| train IoU | 0.74039 | 0.73959 | -0.00080 |
+| validation loss | 1.15312 | 1.17550 | +0.02238 |
+| validation IoU | 0.74558 | 0.74102 | -0.00456 |
+| train epoch time | 0:11:02.963484 | 0:07:34.365747 | -31.47% |
+| validation epoch time | 0:05:00.181873 | 0:03:35.181965 | -28.32% |
+
+LiftTrack epoch-10 validation IoU 比自身 epoch 5 的 `0.74033` 提高 `0.00069`，因此当前最佳 validation checkpoint 更新为 epoch 10。但它比同协议 clean baseline epoch 10 低 `0.00456`，已超过 pilot 阶段使用的 `-0.002` 参考容差，是明确的正式精度风险。这一中期节点不改变预声明的选权规则：继续训练，仅在所有 validation 节点中选最高 IoU，不使用 LasHeR test 调参或挑选 epoch。
+
+epoch-10 checkpoint 为：
+
+```text
+/mnt/tipro4t/seatrack_train_runs/lifttrack_full_seed0_20260712_020400/checkpoints/rgbt_lifttrack/SEATrack_ep0010.pth.tar
+```
+
+文件大小为 372,751,495 bytes，比同轮 baseline checkpoint 小 5,518,798 bytes（1.46%）；SHA-256 为 `069c81fc628e0ad7cfa240d2947a4b7a7aa84f96d8e6ac42ebbf0a07087df893`。加载审计确认 epoch 为 10，250 个浮点模型 tensor 全部有限，`rng_state` 完整包含 Python、NumPy、Torch 和 CUDA 状态。训练已自动进入 epoch 11。
+
+epoch-10 validation 总损失差 `+0.02238` 不是单一项异常：按训练损失权重还原后，GIoU、L1 和 location 对 LiftTrack-baseline 差额的贡献分别约为 `+0.00962/+0.00525/+0.00754`，三项均变差。训练端总 loss 虽然仅差 `-0.00022`，但 LiftTrack 的原始 GIoU/L1 分别差 `+0.00103/+0.00024`，只是被 location loss 的 `-0.00348` 抵消。因此当前风险更接近中期定位能力的广泛差距，不应归因于某一个 loss head。若后续 validation 不能追回，优先审查低参数容量与交换层位置，而不是只调整某一损失权重。
+
+epoch 11 的整轮 train loss/IoU 为 `1.14426/0.74503`，同轮 baseline 为 `1.18252/0.73751`，变化为 `-0.03826/+0.00752`；训练时间 `0:07:34.388659` 对 `0:11:02.790188`，缩短 `31.44%`。这说明 epoch 10 的训练端轻微落后未形成持续性崩坏，但 train 回升不能证明 validation 已恢复，需等待 epoch 15 validation 验证。训练已进入 epoch 12。
+
+epoch 12 的 train loss/IoU 为 `1.14971/0.74387`，baseline 为 `1.16309/0.74160`，变化 `-0.01338/+0.00227`，因此 epoch 11 的回升至少延续了一轮。前 12 轮配对汇总中，LiftTrack 的 train loss `12/12` 全部低于 baseline，train IoU `11/12` 高于 baseline；平均 loss 差为 `-0.02007`，平均 IoU 差为 `+0.00356`。这证明训练优化优势是整体趋势，但 epoch-10 validation 风险表明它尚未稳定转化为泛化优势。
+
+epoch 13 的 train loss/IoU 为 `1.14177/0.74505`，baseline 为 `1.15015/0.74411`，变化 `-0.00838/+0.00094`。此时 `x2r/r2x/difference_ratio` 为 `0.23191/0.34644/1.09585`，相比 epoch 12 的 `0.22105/0.34577/1.09559`，只有 X-to-RGB 更新幅度明显增加，而分支差异比基本稳定。当前没有“交换持续放大且性能同步下降”的证据。
+
+### 13.6 Epoch-15 Validation/Checkpoint 节点
+
+| 指标 | Clean baseline | LiftTrack | Lift - baseline |
+|---|---:|---:|---:|
+| train loss | 1.14654 | 1.12445 | -0.02209 |
+| train IoU | 0.74414 | 0.74807 | +0.00393 |
+| validation loss | 1.15917 | 1.17395 | +0.01478 |
+| validation IoU | 0.74422 | 0.74235 | -0.00187 |
+| train epoch time | 0:11:03.119805 | 0:07:34.537527 | -31.45% |
+| validation epoch time | 0:04:59.807106 | 0:03:35.036634 | -28.28% |
+
+epoch-15 validation IoU 比 LiftTrack epoch 10 的 `0.74102` 提高 `0.00133`，当前最佳 checkpoint 更新为 epoch 15。它与同协议 baseline epoch 15 的差距从 epoch 10 的 `-0.00456` 收窄至 `-0.00187`，重新进入 `-0.002` pilot 参考容差内，但仍未形成 validation 精度领先。该结果支持继续按预声明协议训练，不支持提前宣称方法有效。
+
+同轮比较不等于公平选权比较。截至 epoch 15，LiftTrack 在已有 validation 节点中的最优值为 `0.74235@15`，baseline 在相同训练进度范围内的最优值为 `0.74558@10`，最优对最优的差距仍为 `-0.00323`，未进入 `-0.002` 参考容差。已完成的 baseline 60-epoch 运行最优值为 `0.75075@50`，相对 LiftTrack 当前最优值高 `0.00840`；因 LiftTrack 尚未训练到同等阶段，该值只作为最终待追赶目标，不用于当前提前判负。
+
+epoch-15 checkpoint 大小为 372,836,423 bytes，比同轮 baseline 小 5,518,606 bytes（1.46%）；SHA-256 为 `32a51bd33bc7e126043f17a1c371fe11a7441637191cb6491e6693bf59f175dc`。加载审计确认 epoch 为 15，250 个浮点模型 tensor 全部有限，Python、NumPy、Torch 和 CUDA RNG 状态完整。训练已进入 epoch 16。
+
+epoch 16 的 train loss/IoU 为 `1.12151/0.74853`，baseline 为 `1.14332/0.74489`，变化 `-0.02181/+0.00364`。`x2r/r2x/difference_ratio` 从 epoch-15 validation 的 `0.24869/0.38246/1.12290` 回落至训练整轮的 `0.24114/0.35974/1.10217`，而 train IoU 仍保持优势；但因 train/validation 样本分布不同，这只足以否定“交换幅度越大则性能越高”的简单跨 split 单调解释，不能用来推断因果。
+
+### 13.7 Epoch-20 Validation/Checkpoint 节点
+
+| 指标 | Clean baseline | LiftTrack | Lift - baseline |
+|---|---:|---:|---:|
+| train loss | 1.13229 | 1.11425 | -0.01804 |
+| train IoU | 0.74699 | 0.75023 | +0.00324 |
+| validation loss | 1.15065 | 1.15402 | +0.00337 |
+| validation IoU | 0.74711 | 0.74550 | -0.00161 |
+| train epoch time | 0:11:02.560625 | 0:07:34.413203 | -31.42% |
+| validation epoch time | 0:04:58.991592 | 0:03:34.965157 | -28.10% |
+
+epoch-20 validation IoU 比 LiftTrack epoch 15 的 `0.74235` 提高 `0.00315`，当前最佳 checkpoint 更新为 epoch 20。截至相同训练进度，baseline 的最佳 validation 也为 `0.74711@20`，因此公平的最佳对最佳差距为 `-0.00161`，首次进入 `-0.002` 参考容差。相对 baseline 完整训练最优 `0.75075@50` 仍差 `-0.00525`，但 LiftTrack 尚未到同等训练阶段。
+
+这一结果表明方法已达到预先设定的中期 validation 精度近似门槛，同时保持大幅效率优势；但它仍未证明精度领先，也不替代最终最佳 validation 选权和 LasHeR benchmark。
+
+epoch-20 checkpoint 大小为 372,921,287 bytes，比同轮 baseline 小 5,518,414 bytes（1.46%）；SHA-256 为 `3c8d24af53cfdef339d9dd0c156f3fe8b9efa63a59e24637e2ce1933afb937aa`。加载审计确认 epoch 为 20，250 个浮点模型 tensor 全部有限，四类 RNG 状态完整。训练已进入 epoch 21。
+
+### 13.8 Epoch-25 Validation/Checkpoint 节点
+
+| 指标 | Clean baseline | LiftTrack | Lift - baseline |
+|---|---:|---:|---:|
+| train loss | 1.09999 | 1.08918 | -0.01081 |
+| train IoU | 0.75249 | 0.75456 | +0.00207 |
+| validation loss | 1.13711 | 1.17122 | +0.03411 |
+| validation IoU | 0.74844 | 0.74349 | -0.00495 |
+| train epoch time | 0:11:02.810370 | 0:07:33.044398 | -31.65% |
+| validation epoch time | 0:04:58.984417 | 0:03:34.328471 | -28.31% |
+
+epoch-25 训练指标仍优于同轮 baseline，但 validation IoU 为 `0.74349`，比自身当前最优 `0.74550@20` 低 `0.00201`，比 baseline epoch 25 低 `0.00495`。因此不更新最优权重，继续保留 epoch 20。截至 epoch 25，baseline 在相同训练范围内的最优值为 `0.74844@25`，LiftTrack 最优对 baseline 最优的公平差距为 `-0.00294`，已离开 `-0.002` 参考容差。
+
+该结果表明更低的训练 loss 和更高的训练 IoU 没有稳定转化为 validation 收益，存在 epoch 20 后的泛化回退。按预声明协议继续训练并观察后续 validation 节点，不因单个下降节点提前停止，也不使用 LasHeR test 挑选 epoch。
+
+epoch-25 checkpoint 大小为 373,006,151 bytes，比同轮 baseline 小 5,518,286 bytes（1.46%）；SHA-256 为 `f90c8b0eb66cabb5c7bcc790f1dffadcef55d20217d6a7283ee2ee792d0182c3`。加载审计确认 epoch 为 25，250 个浮点模型 tensor 全部有限，Python、NumPy、Torch 和 CUDA RNG 状态完整。训练已进入 epoch 26。
+
+### 13.9 Epoch-30 Validation/Checkpoint 节点
+
+| 指标 | Clean baseline | LiftTrack | Lift - baseline |
+|---|---:|---:|---:|
+| train loss | 1.10443 | 1.07157 | -0.03286 |
+| train IoU | 0.75241 | 0.75788 | +0.00547 |
+| validation loss | 1.14220 | 1.15281 | +0.01061 |
+| validation IoU | 0.74779 | 0.74584 | -0.00195 |
+| train epoch time | 0:11:02.908388 | 0:07:32.194737 | -31.79% |
+| validation epoch time | 0:04:58.269475 | 0:03:34.246984 | -28.17% |
+
+epoch-30 validation IoU 为 `0.74584`，比原最优 `0.74550@20` 高 `0.00034`，因此当前最优 checkpoint 更新为 epoch 30。它与同轮 baseline 的差距为 `-0.00195`，重新进入 `-0.002` 参考容差；但截至相同训练进度，baseline 最优仍为 `0.74844@25`，因此最优对最优差距为 `-0.00260`，尚未进入参考容差。相对 baseline 完整训练最优 `0.75075@50` 仍差 `-0.00491`。
+
+epoch 25 的回落在 epoch 30 得到恢复，说明单节点下降不足以判定持续过拟合。当前证据支持“效率优势稳定、validation 精度接近 baseline”，仍不支持“精度领先”。
+
+epoch-30 checkpoint 大小为 373,091,015 bytes，比同轮 baseline 小 5,518,094 bytes（1.46%）；SHA-256 为 `705721999817638c471fb0d0f8b27c0d4c99f39a95a9ce0f771c5a38d8b6252c`。加载审计确认 epoch 为 30，250 个浮点模型 tensor 全部有限，四类 RNG 状态完整。训练继续进入 epoch 31。
+
+### 13.10 Epoch-35 Validation/Checkpoint 节点
+
+| 指标 | Clean baseline | LiftTrack | Lift - baseline |
+|---|---:|---:|---:|
+| train loss | 1.07788 | 1.06940 | -0.00848 |
+| train IoU | 0.75654 | 0.75811 | +0.00157 |
+| validation loss | 1.16053 | 1.16021 | -0.00032 |
+| validation IoU | 0.74628 | 0.74530 | -0.00098 |
+| train epoch time | 0:11:02.675717 | 0:07:32.266907 | -31.75% |
+| validation epoch time | 0:04:58.973487 | 0:03:33.859201 | -28.47% |
+
+epoch-35 validation IoU 为 `0.74530`，比当前最优 `0.74584@30` 低 `0.00054`，因此不更新最优 checkpoint。它与同轮 baseline 的差距仅 `-0.00098`，但截至 epoch 35 的最优对最优差距仍为 `0.74584@30 - 0.74844@25 = -0.00260`。因此可以表述为同轮精度接近，不能表述为相同训练范围内已追平 baseline 最优。
+
+epoch-35 checkpoint 大小为 373,175,879 bytes，比同轮 baseline 小 5,517,966 bytes（1.46%）；SHA-256 为 `820aaa5fa6269cc826afb670b38e116e3eba574a817b025532f85af2d6d336c3`。加载审计确认 epoch 为 35，250 个浮点模型 tensor 全部有限，四类 RNG 状态完整。训练继续进入 epoch 36。
+
+### 13.11 Epoch-40 Validation/Checkpoint 节点
+
+| 指标 | Clean baseline | LiftTrack | Lift - baseline |
+|---|---:|---:|---:|
+| train loss | 1.07770 | 1.06799 | -0.00971 |
+| train IoU | 0.75707 | 0.75898 | +0.00191 |
+| validation loss | 1.14836 | 1.16580 | +0.01744 |
+| validation IoU | 0.74759 | 0.74420 | -0.00339 |
+| train epoch time | 0:11:02.887419 | 0:07:32.020542 | -31.81% |
+| validation epoch time | 0:04:58.574111 | 0:03:34.163280 | -28.27% |
+
+epoch-40 validation IoU 为 `0.74420`，比当前最优 `0.74584@30` 低 `0.00164`，不更新最优 checkpoint。同轮 baseline 为 `0.74759`，差距 `-0.00339`；截至 epoch 40 的最优对最优差距仍为 `-0.00260`。训练 loss/IoU 继续优于 baseline，但未转化为该节点的 validation 收益，是需要在 epoch 45 以及 epoch 48 学习率衰减后继续核验的泛化风险。
+
+epoch-40 validation 的 `x2r/r2x/difference_ratio` 为 `0.28439/0.43540/1.17020`，交换诊断比 epoch 35 增大，同时 validation IoU 下降。这仅是相关变化，既不足以证明交换幅度导致回落，也不足以支持模态可靠性自适应的因果表述。
+
+epoch-40 checkpoint 大小为 373,260,743 bytes，比同轮 baseline 小 5,517,838 bytes（1.46%）；SHA-256 为 `ccbf66a39ca5e34bb3459eaf8ad410737c4e622ff2cb4f3da64faba1677189ee`。加载审计确认 epoch 为 40，250 个浮点模型 tensor 全部有限，四类 RNG 状态完整。训练继续进入 epoch 41。
+
+### 13.12 Epoch-45 Validation/Checkpoint 节点
+
+| 指标 | Clean baseline | LiftTrack | Lift - baseline |
+|---|---:|---:|---:|
+| train loss | 1.08029 | 1.04851 | -0.03178 |
+| train IoU | 0.75643 | 0.76177 | +0.00534 |
+| validation loss | 1.14928 | 1.17264 | +0.02336 |
+| validation IoU | 0.74724 | 0.74429 | -0.00295 |
+| train epoch time | 0:11:02.442130 | 0:07:31.987384 | -31.77% |
+| validation epoch time | 0:04:58.707707 | 0:03:34.023010 | -28.35% |
+
+epoch-45 validation IoU 为 `0.74429`，比当前最优 `0.74584@30` 低 `0.00155`，不更新最优 checkpoint。同轮 baseline 为 `0.74724`，差距 `-0.00295`；截至 epoch 45 的最优对最优差距仍为 `-0.00260`。这是 epoch 48 学习率衰减前的最后一个 validation 节点，将与 epoch 50/55 直接对照，判断低学习率是否缓解训练与 validation 的分离。
+
+epoch-45 validation 的 `x2r/r2x/difference_ratio` 为 `0.32200/0.43202/1.18190`，交换诊断仍高于早期节点，但不能据此推断因果。当前最稳妥的结论是：效率优势已稳定验证，训练拟合优于 baseline，但 validation 精度只是接近而非领先。
+
+epoch-45 checkpoint 大小为 373,345,607 bytes，比同轮 baseline 小 5,517,646 bytes（1.46%）；SHA-256 为 `55962216462c5e73d56e4b3b94603e7dd529053c484c8b454a76112a1936f3fd`。加载审计确认 epoch 为 45，250 个浮点模型 tensor 全部有限，四类 RNG 状态完整。训练继续进入 epoch 46。
+
+### 13.13 Epoch-50 Validation/Checkpoint 与学习率衰减核验
+
+| 指标 | Clean baseline | LiftTrack | Lift - baseline |
+|---|---:|---:|---:|
+| train loss | 1.04869 | 1.03277 | -0.01592 |
+| train IoU | 0.76271 | 0.76489 | +0.00218 |
+| validation loss | 1.13603 | 1.16454 | +0.02851 |
+| validation IoU | 0.75075 | 0.74499 | -0.00576 |
+| train epoch time | 0:11:02.918278 | 0:07:32.005104 | -31.81% |
+| validation epoch time | 0:04:59.035045 | 0:03:34.238582 | -28.36% |
+
+epoch-50 checkpoint 中 optimizer param group 的实际学习率为 `4e-5`，相比 epoch-45 checkpoint 的 `4e-4` 降低 10 倍，证明 epoch 48 的 StepLR 衰减已正确执行。epoch-50 validation IoU 为 `0.74499`，比衰减前 epoch 45 的 `0.74429` 回升 `0.00070`，但仍比当前最优 `0.74584@30` 低 `0.00085`，因此不更新最优 checkpoint。
+
+同轮 baseline 在 epoch 50 刷新为 `0.75075`，LiftTrack 同轮差距为 `-0.00576`；截至相同训练进度，最优对最优差距为 `0.74584@30 - 0.75075@50 = -0.00491`。因此低学习率目前只带来小幅 validation 恢复，尚未缓解与 baseline 的正式精度差距。效率优势仍然稳定，但“有效结果”的精度部分仍需 epoch 55/60 和最终 benchmark 验证。
+
+epoch-50 checkpoint 大小为 373,430,471 bytes，比同轮 baseline 小 5,517,518 bytes（1.46%）；SHA-256 为 `ed7536ba88680c76580afee3ca47f72b19633a0b12c5cb474e9768d758850d02`。加载审计确认 epoch 为 50，250 个浮点模型 tensor 全部有限，四类 RNG 状态完整。训练继续进入 epoch 51。
+
+### 13.14 Epoch-55 Validation/Checkpoint 节点
+
+| 指标 | Clean baseline | LiftTrack | Lift - baseline |
+|---|---:|---:|---:|
+| train loss | 1.04113 | 1.03005 | -0.01108 |
+| train IoU | 0.76340 | 0.76596 | +0.00256 |
+| validation loss | 1.13489 | 1.16121 | +0.02632 |
+| validation IoU | 0.75064 | 0.74539 | -0.00525 |
+| train epoch time | 0:11:02.362793 | 0:07:32.042883 | -31.76% |
+| validation epoch time | 0:04:59.176642 | 0:03:34.634278 | -28.26% |
+
+epoch-55 validation IoU 为 `0.74539`，比 epoch 50 的 `0.74499` 再回升 `0.00040`，但仍比当前最优 `0.74584@30` 低 `0.00045`，因此不更新最优 checkpoint。同轮 baseline 为 `0.75064`，差距 `-0.00525`；截至 epoch 55，baseline 最优仍为 `0.75075@50`，最优对最优差距仍为 `-0.00491`。
+
+checkpoint 中 optimizer LR 仍为 `4e-5`。低学习率阶段从 epoch 45 的 `0.74429` 逐步恢复到 epoch 55 的 `0.74539`，但恢复幅度尚不足以超过 epoch 30，也未缩小与 baseline 最优的差距。只剩 epoch 60 最终 validation 节点；完成后才能按预声明规则冻结唯一 benchmark checkpoint。
+
+epoch-55 checkpoint 大小为 373,515,335 bytes，比同轮 baseline 小 5,517,326 bytes（1.46%）；SHA-256 为 `53003b10fa5a6fca5f27c7fd9125ab873a605217318c0bf04ebe89dda951e075`。加载审计确认 epoch 为 55，250 个浮点模型 tensor 全部有限，四类 RNG 状态完整。训练继续进入 epoch 56。
+
+### 13.15 Epoch-60 最终 Validation 与权重冻结
+
+| 指标 | Clean baseline | LiftTrack | Lift - baseline |
+|---|---:|---:|---:|
+| train loss | 1.03658 | 1.02548 | -0.01110 |
+| train IoU | 0.76432 | 0.76615 | +0.00183 |
+| validation loss | 1.13977 | 1.16406 | +0.02429 |
+| validation IoU | 0.74817 | 0.74488 | -0.00329 |
+| train epoch time | 0:11:02.651659 | 0:07:32.235632 | -31.76% |
+| validation epoch time | 0:04:58.833791 | 0:03:34.352561 | -28.27% |
+
+epoch-60 validation IoU 为 `0.74488`，比 epoch 55 低 `0.00051`，比全程最优 `0.74584@30` 低 `0.00096`，因此不更新最优 checkpoint。按预声明的 LasHeR validation 选权规则，60 轮训练结束后唯一冻结用于 benchmark 的权重为 `SEATrack_ep0030.pth.tar`，其 validation IoU 为 `0.74584`。测试集结果不参与 epoch 选择。
+
+LiftTrack 最优 validation IoU 比 clean baseline 最优 `0.75075@50` 低 `0.00491`。最终证据支持：LiftTrack 在同一训练协议下将训练耗时稳定降低约 31.8%、validation 耗时降低约 28.3%，训练拟合指标略优；但 validation 精度没有追平 baseline，不能宣称精度提升。下一步仅对冻结的 epoch-30 权重执行一次 LasHeR benchmark，检验效率收益是否伴随可接受的测试集精度。
+
+epoch-60 checkpoint 大小为 373,600,263 bytes；SHA-256 为 `8448492dd14fc2458f23c71458899e26fa978f55eb6316cb941e79e506b37da7`。加载审计确认 epoch 为 60，250 个浮点模型 tensor 全部有限，Python、NumPy、Torch 和 CUDA RNG 状态完整，optimizer LR 为 `4e-5`。训练进程于 2026-07-12 12:19:03 正常完成并退出。
+
+### 13.16 冻结 Epoch-30 LasHeR Benchmark
+
+唯一冻结的 epoch-30 权重按与 clean baseline 相同的 LasHeR 245 序列、4 worker 和指标实现完成正式 benchmark。跟踪进程退出码为 0，总耗时 1749.34 秒；raw result 为 245/245，`missing=0`，未发现 Traceback、RuntimeError、OOM、checkpoint missing/unexpected key 或结果写入失败。
+
+| 指标 | Clean baseline ep50 | LiftTrack ep30 | Lift - baseline |
+|---|---:|---:|---:|
+| PR20 | 0.703055 | 0.562638 | -0.140417 |
+| NPR20 | 0.669015 | 0.524230 | -0.144785 |
+| NPR AUC | 0.604298 | 0.476457 | -0.127841 |
+| SR/AUC | 0.565194 | 0.448720 | -0.116474 |
+
+LiftTrack 在四项指标上均显著低于 clean baseline，既未通过“至少一项不低于 baseline”的最低门禁，也未达到论文强度目标。该下降远大于 validation 最优差距 `-0.00491`，说明当前 BiLift 训练目标在 LasHeR validation 上表现接近，但没有迁移到 test benchmark；当前最稳妥结论是测试集泛化失败，而不是精度接近。
+
+checkpoint 由测试 tracker 使用 `strict=True` 完整加载，配置启用了 BiLift layers `[5, 9]`、rank 8；结果数、注释匹配和异常扫描均通过。因此没有证据将大幅下降归因于漏载权重或不完整评测。当前 LiftTrack 形式应拒绝，不应继续 RGBT234 或多 seed 扩展，也不应基于 test 结果改选 epoch。后续若继续研究，应先设计独立的受控模态退化诊断与更强的 validation/test 泛化约束；这些属于新实验，不在本轮启动。
+
+按用户要求，benchmark 完成后未启动后续 GPU 工作；检查时相关训练/评测进程均已退出，GPU compute process 为空，显存 `0 MiB`、利用率 `0%`。
