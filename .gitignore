@@ -31,3 +31,4 @@ paper_single_20260704_003607_weights
 paper_single_20260704_003607_checkpoints
 lib/train/data_specs_copy
 experiments
+.worktrees/
