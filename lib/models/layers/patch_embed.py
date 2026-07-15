@@ -1,6 +1,6 @@
 import torch.nn as nn
 
-from timm.models.layers import to_2tuple
+from lib.models.layers.timm_compat import to_2tuple
 
 
 class PatchEmbed(nn.Module):

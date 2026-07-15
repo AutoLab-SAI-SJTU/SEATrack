@@ -9,9 +9,10 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from timm.models.layers import to_2tuple
+from lib.models.layers.timm_compat import to_2tuple
 
 from lib.models.layers.patch_embed import PatchEmbed
+from lib.train.admin.logging_utils import get_train_logger
 from .utils import combine_tokens, recover_tokens
 from .vit import VisionTransformer
 from ..layers.attn_blocks import CEBlock_AP
@@ -31,7 +32,11 @@ class VisionTransformerCE(VisionTransformer):
                  num_heads=12, mlp_ratio=4., qkv_bias=True, representation_size=None, distilled=False,
                  drop_rate=0., attn_drop_rate=0., drop_path_rate=0., embed_layer=PatchEmbed, norm_layer=None,
                  act_layer=None, weight_init='', ce_loc=None, ce_keep_ratio=None, search_size=None, template_size=None,
-                 new_patch_size=None, amglora_rank=None, hmoe_rank=None):
+                 new_patch_size=None, amglora_rank=None, hmoe_rank=None,
+                 gra_enabled=False, gra_diagnostics=False, gra_layers=None, gra_rgae_enabled=True,
+                 gra_rho_min=0.1, gra_detach_rho=False, amg_enabled=True, hmoe_enabled=True,
+                 bilift_enabled=False, bilift_layers=None, bilift_rank=8,
+                 bilift_dropout=0.0, bilift_diagnostics=False):
         """
         Args:
             img_size (int, tuple): input image size
@@ -90,8 +95,10 @@ class VisionTransformerCE(VisionTransformer):
         blocks = []
         ce_index = 0
         self.ce_loc = ce_loc
-        lora_layers = [1, 3, 5, 7, 9, 11] 
-        moe_layers = [1, 3, 5, 7, 9, 11] 
+        lora_layers = [1, 3, 5, 7, 9, 11]
+        moe_layers = [1, 3, 5, 7, 9, 11] if hmoe_enabled else []
+        gra_layers = lora_layers if gra_layers is None else list(gra_layers)
+        bilift_layers = [] if bilift_layers is None else list(bilift_layers)
         for i in range(depth):
             ce_keep_ratio_i = 1.0
             if ce_loc is not None and i in ce_loc:
@@ -101,7 +108,17 @@ class VisionTransformerCE(VisionTransformer):
                     CEBlock_AP(
                         dim=embed_dim, num_heads=num_heads, mlp_ratio=mlp_ratio, qkv_bias=qkv_bias, drop=drop_rate,
                         attn_drop=attn_drop_rate, drop_path=dpr[i], norm_layer=norm_layer, act_layer=act_layer,
-                        keep_ratio_search=ce_keep_ratio_i, layer=i, lora_layers=lora_layers, moe_layers=moe_layers, amglora_rank=amglora_rank, hmoe_rank=hmoe_rank)
+                        keep_ratio_search=ce_keep_ratio_i, layer=i, lora_layers=lora_layers, moe_layers=moe_layers,
+                        amglora_rank=amglora_rank, hmoe_rank=hmoe_rank,
+                        gra_enabled=gra_enabled, gra_diagnostics=gra_diagnostics, gra_layers=gra_layers,
+                        gra_rgae_enabled=gra_rgae_enabled, gra_rho_min=gra_rho_min,
+                        gra_detach_rho=gra_detach_rho, amg_enabled=amg_enabled,
+                        hmoe_enabled=hmoe_enabled,
+                        bilift_enabled=bilift_enabled and i in bilift_layers,
+                        bilift_rank=bilift_rank,
+                        bilift_reverse=(bilift_layers.index(i) % 2 == 1) if i in bilift_layers else False,
+                        bilift_dropout=bilift_dropout,
+                        bilift_diagnostics=bilift_diagnostics)
                     )
         self.blocks = nn.Sequential(*blocks)
         self.norm = norm_layer(embed_dim)
@@ -153,7 +170,7 @@ class VisionTransformerCE(VisionTransformer):
         x_dtes = self.pos_drop(x_dtes)
 
         if self.add_cls_token:
-            print("add cls_token")
+            _logger.info("Adding cls_token")
             cls_tokens = self.cls_token.expand(B, -1, -1)
             x_rgbs = torch.cat([cls_tokens, x_rgbs], dim=1)
             x_dtes = torch.cat([cls_tokens, x_dtes], dim=1)
@@ -174,10 +191,18 @@ class VisionTransformerCE(VisionTransformer):
         removed_indexes_s = []
         global_index_s = [global_rgbsearch_idx, global_dtesearch_idx]
         attns = []
+        gratrack_stats = {}
+        bilift_stats = {}
         x = [x_rgbs, x_dtes]
         for i, blk in enumerate(self.blocks):
-            x, global_index_t, global_index_s, removed_index_s = blk(x, global_index_t, global_index_s, mask_x, ce_template_mask, ce_keep_rate)    
+            x, global_index_t, global_index_s, removed_index_s = blk(
+                x, global_index_t, global_index_s, mask_x, ce_template_mask, ce_keep_rate
+            )
             # attns.append(attn)
+            for name, value in getattr(blk, "gratrack_stats", {}).items():
+                gratrack_stats.setdefault(name, []).append(value)
+            for name, value in getattr(blk, "bilift_stats", {}).items():
+                bilift_stats.setdefault(name, []).append(value)
             if self.ce_loc is not None and i in self.ce_loc:
                 removed_indexes_s.append(removed_index_s)
         if self.add_cls_token:
@@ -215,6 +240,16 @@ class VisionTransformerCE(VisionTransformer):
         aux_dict = {
             'attns': attns
                     }
+        if gratrack_stats:
+            aux_dict['gratrack_stats'] = {
+                name: torch.stack(values).mean()
+                for name, values in gratrack_stats.items()
+            }
+        if bilift_stats:
+            aux_dict['bilift_stats'] = {
+                name: torch.stack(values).mean()
+                for name, values in bilift_stats.items()
+            }
 
         return x_fusion, aux_dict
 
@@ -226,35 +261,36 @@ class VisionTransformerCE(VisionTransformer):
 
         return x, aux_dict
 
-def _create_vision_transformer(pretrained=False, **kwargs):
+def _create_vision_transformer(pretrained=False, settings=None, **kwargs):
+    model_logger = get_train_logger(settings, "model")
     model = VisionTransformerCE(**kwargs)
 
     if pretrained:
         if 'npz' in pretrained:
             model.load_pretrained(pretrained, prefix='')
         else:
-            checkpoint = torch.load(pretrained, map_location="cpu")
+            checkpoint = torch.load(pretrained, map_location="cpu", weights_only=False)
             missing_keys, unexpected_keys = model.load_state_dict(checkpoint["net"], strict=False)
-            print('Load pretrained OSTrack from: ' + pretrained)
-            print(f"missing_keys: {missing_keys}")
-            print(f"unexpected_keys: {unexpected_keys}")
+            model_logger.info("Loaded pretrained OSTrack from %s", pretrained)
+            model_logger.info("Missing keys: %s", missing_keys)
+            model_logger.info("Unexpected keys: %s", unexpected_keys)
 
     return model
 
 
-def vit_base_patch16_224_ce(pretrained=False, **kwargs):
+def vit_base_patch16_224_ce(pretrained=False, settings=None, **kwargs):
     """ ViT-Base model (ViT-B/16) from original paper (https://arxiv.org/abs/2010.11929).
     """
     model_kwargs = dict(
         patch_size=16, embed_dim=768, depth=12, num_heads=12, **kwargs)
-    model = _create_vision_transformer(pretrained=pretrained, **model_kwargs)
+    model = _create_vision_transformer(pretrained=pretrained, settings=settings, **model_kwargs)
     return model
 
 
-def vit_large_patch16_224_ce_prompt(pretrained=False, **kwargs):
+def vit_large_patch16_224_ce_prompt(pretrained=False, settings=None, **kwargs):
     """ ViT-Large model (ViT-L/16) from original paper (https://arxiv.org/abs/2010.11929).
     """
     model_kwargs = dict(
         patch_size=16, embed_dim=1024, depth=24, num_heads=16, **kwargs)
-    model = _create_vision_transformer(pretrained=pretrained, **model_kwargs)
+    model = _create_vision_transformer(pretrained=pretrained, settings=settings, **model_kwargs)
     return model

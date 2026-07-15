@@ -1,3 +1,6 @@
+import random
+
+import numpy as np
 import torch
 from torch.utils.data.distributed import DistributedSampler
 # datasets related
@@ -7,6 +10,14 @@ from lib.train.dataset import VisEvent, LasHeR, DepthTrack
 from lib.train.data import sampler, opencv_loader, processing, LTRLoader
 import lib.train.data.transforms as tfm
 from lib.utils.misc import is_main_process
+from lib.train.admin.logging_utils import get_train_logger
+
+
+def seed_data_worker(worker_id):
+    del worker_id
+    worker_seed = torch.initial_seed() % (2 ** 32)
+    random.seed(worker_seed)
+    np.random.seed(worker_seed)
 
 
 def update_settings(settings, cfg):
@@ -29,9 +40,11 @@ def update_settings(settings, cfg):
 def names2datasets(name_list: list, settings, image_loader):
     assert isinstance(name_list, list)
     datasets = []
+    data_logger = get_train_logger(settings, "data")
     for name in name_list:
+        data_logger.info("Building dataset: %s", name)
         assert name in ["LASOT", "GOT10K_vottrain", "GOT10K_votval", "GOT10K_train_full", "GOT10K_official_val", "COCO17", "VID", "TRACKINGNET",
-                        "DepthTrack_train", "DepthTrack_val", "LasHeR_all", "LasHeR_train", "LasHeR_val", "VisEvent"]
+                        "DepthTrack_train", "DepthTrack_val", "LasHeR_all", "LasHeR_train", "LasHeR_val", "LasHeR_smoke", "VisEvent"]
         if name == "DepthTrack_train":
             datasets.append(DepthTrack(settings.env.depthtrack_dir, dtype='rgbcolormap', split='train'))
         if name == "DepthTrack_val":
@@ -42,30 +55,32 @@ def names2datasets(name_list: list, settings, image_loader):
             datasets.append(LasHeR(settings.env.lasher_dir, dtype='rgbrgb', split='train'))
         if name == "LasHeR_val":
             datasets.append(LasHeR(settings.env.lasher_dir, dtype='rgbrgb', split='val'))
+        if name == "LasHeR_smoke":
+            datasets.append(LasHeR(settings.env.lasher_dir, dtype='rgbrgb', split='smoke'))
         if name == "VisEvent":
             datasets.append(VisEvent(settings.env.visevent_dir, dtype='rgbrgb', split='train'))
         """Following is rgb dataset"""
         if name == "LASOT":
             if settings.use_lmdb:
-                print("Building lasot dataset from lmdb")
+                data_logger.info("Building lasot dataset from lmdb")
                 datasets.append(Lasot_lmdb(settings.env.lasot_lmdb_dir, split='train', image_loader=image_loader))
             else:
                 datasets.append(Lasot(settings.env.lasot_dir, split='train', image_loader=image_loader))
         if name == "GOT10K_vottrain":
             if settings.use_lmdb:
-                print("Building got10k from lmdb")
+                data_logger.info("Building got10k from lmdb")
                 datasets.append(Got10k_lmdb(settings.env.got10k_lmdb_dir, split='vottrain', image_loader=image_loader))
             else:
                 datasets.append(Got10k(settings.env.got10k_dir, split='vottrain', image_loader=image_loader))
         if name == "GOT10K_train_full":
             if settings.use_lmdb:
-                print("Building got10k_train_full from lmdb")
+                data_logger.info("Building got10k_train_full from lmdb")
                 datasets.append(Got10k_lmdb(settings.env.got10k_lmdb_dir, split='train_full', image_loader=image_loader))
             else:
                 datasets.append(Got10k(settings.env.got10k_dir, split='train_full', image_loader=image_loader))
         if name == "GOT10K_votval":
             if settings.use_lmdb:
-                print("Building got10k from lmdb")
+                data_logger.info("Building got10k from lmdb")
                 datasets.append(Got10k_lmdb(settings.env.got10k_lmdb_dir, split='votval', image_loader=image_loader))
             else:
                 datasets.append(Got10k(settings.env.got10k_dir, split='votval', image_loader=image_loader))
@@ -76,19 +91,19 @@ def names2datasets(name_list: list, settings, image_loader):
                 datasets.append(Got10k(settings.env.got10k_val_dir, split=None, image_loader=image_loader))
         if name == "COCO17":
             if settings.use_lmdb:
-                print("Building COCO2017 from lmdb")
+                data_logger.info("Building COCO2017 from lmdb")
                 datasets.append(MSCOCOSeq_lmdb(settings.env.coco_lmdb_dir, version="2017", image_loader=image_loader))
             else:
                 datasets.append(MSCOCOSeq(settings.env.coco_dir, version="2017", image_loader=image_loader))
         if name == "VID":
             if settings.use_lmdb:
-                print("Building VID from lmdb")
+                data_logger.info("Building VID from lmdb")
                 datasets.append(ImagenetVID_lmdb(settings.env.imagenet_lmdb_dir, image_loader=image_loader))
             else:
                 datasets.append(ImagenetVID(settings.env.imagenet_dir, image_loader=image_loader))
         if name == "TRACKINGNET":
             if settings.use_lmdb:
-                print("Building TrackingNet from lmdb")
+                data_logger.info("Building TrackingNet from lmdb")
                 datasets.append(TrackingNet_lmdb(settings.env.trackingnet_lmdb_dir, image_loader=image_loader))
             else:
                 # raise ValueError("NOW WE CAN ONLY USE TRACKINGNET FROM LMDB")
@@ -97,6 +112,9 @@ def names2datasets(name_list: list, settings, image_loader):
 
 
 def build_dataloaders(cfg, settings):
+    data_seed = int(getattr(settings, "seed", 0))
+    train_seed = data_seed
+    val_seed = data_seed + 1_000_000
     # Data transform
     # Note: for multimodal data, ToGrayscale and Normalize need modify
     transform_joint = tfm.Transform(tfm.ToGrayscale(probability=0.05),
@@ -136,7 +154,7 @@ def build_dataloaders(cfg, settings):
     settings.num_search = getattr(cfg.DATA.SEARCH, "NUMBER", 1)
     sampler_mode = getattr(cfg.DATA, "SAMPLER_MODE", "causal")
     train_cls = getattr(cfg.TRAIN, "TRAIN_CLS", False)
-    print("sampler_mode", sampler_mode)
+    get_train_logger(settings, "data").info("sampler_mode=%s", sampler_mode)
     dataset_train = sampler.TrackingSampler(datasets=names2datasets(cfg.DATA.TRAIN.DATASETS_NAME, settings, opencv_loader),
                                             p_datasets=cfg.DATA.TRAIN.DATASETS_RATIO,
                                             samples_per_epoch=cfg.DATA.TRAIN.SAMPLE_PER_EPOCH,
@@ -144,11 +162,15 @@ def build_dataloaders(cfg, settings):
                                             num_template_frames=settings.num_template, processing=data_processing_train,
                                             frame_sample_mode=sampler_mode, train_cls=train_cls)
 
-    train_sampler = DistributedSampler(dataset_train) if settings.local_rank != -1 else None
+    train_sampler = (
+        DistributedSampler(dataset_train, seed=train_seed)
+        if settings.local_rank != -1 else None
+    )
     shuffle = False if settings.local_rank != -1 else True
 
     loader_train = LTRLoader('train', dataset_train, training=True, batch_size=cfg.TRAIN.BATCH_SIZE, shuffle=shuffle,
-                             num_workers=cfg.TRAIN.NUM_WORKER, drop_last=True, stack_dim=1, sampler=train_sampler)
+                             num_workers=cfg.TRAIN.NUM_WORKER, drop_last=True, stack_dim=1, sampler=train_sampler,
+                             worker_init_fn=seed_data_worker, base_seed=train_seed)
 
     # Validation samplers and loaders(visevent no val split)
     if cfg.DATA.VAL.DATASETS_NAME[0] is None:
@@ -160,17 +182,22 @@ def build_dataloaders(cfg, settings):
                                             max_gap=cfg.DATA.MAX_SAMPLE_INTERVAL, num_search_frames=settings.num_search,
                                             num_template_frames=settings.num_template, processing=data_processing_val,
                                             frame_sample_mode=sampler_mode, train_cls=train_cls)
-        val_sampler = DistributedSampler(dataset_val) if settings.local_rank != -1 else None
+        val_sampler = (
+            DistributedSampler(dataset_val, seed=val_seed)
+            if settings.local_rank != -1 else None
+        )
         loader_val = LTRLoader('val', dataset_val, training=False, batch_size=cfg.TRAIN.BATCH_SIZE,
                             num_workers=cfg.TRAIN.NUM_WORKER, drop_last=True, stack_dim=1, sampler=val_sampler,
-                            epoch_interval=cfg.TRAIN.VAL_EPOCH_INTERVAL)
+                            epoch_interval=cfg.TRAIN.VAL_EPOCH_INTERVAL,
+                            worker_init_fn=seed_data_worker, base_seed=val_seed)
 
     return loader_train, loader_val
 
 
-def get_optimizer_scheduler(net, cfg):
+def get_optimizer_scheduler(net, cfg, settings=None):
+    model_logger = get_train_logger(settings, "model")
     if cfg.TRAIN.PEFT:
-        trainable_params = ['moe', 'scaling', 'lora']
+        trainable_params = ['moe', 'scaling', 'lora', 'bilift', 'gra', 'rgae', 'gate', 'trust', 'router_bias', 'sparse']
         param_dicts = [
             {"params": [p for n, p in net.named_parameters() if p.requires_grad and any([param in n for param in trainable_params])]}
         ]
@@ -180,7 +207,7 @@ def get_optimizer_scheduler(net, cfg):
 
         total_num = sum(p.numel() for n, p in net.named_parameters())
         trainable_num = sum(p.numel() for n, p in net.named_parameters() if p.requires_grad)
-        print(f'Total: {total_num/1e6} M, Trainable: {trainable_num/1e6} M')
+        model_logger.info("Parameters: total=%.6fM trainable=%.6fM", total_num / 1e6, trainable_num / 1e6)
         # for n, p in net.named_parameters(): 
         #     if p.requires_grad:
         #         print(n, p.numel())
@@ -193,10 +220,10 @@ def get_optimizer_scheduler(net, cfg):
             },
         ]
         if is_main_process():
-            print("Learnable parameters are shown below.")
+            model_logger.info("Learnable parameters are shown below.")
             for n, p in net.named_parameters():
                 if p.requires_grad:
-                    print(n)
+                    model_logger.info("%s", n)
 
     if cfg.TRAIN.OPTIMIZER == "ADAMW":
         optimizer = torch.optim.AdamW(param_dicts, lr=cfg.TRAIN.LR,

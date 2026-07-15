@@ -1,5 +1,6 @@
 import os
 import os.path
+import logging
 import torch
 import numpy as np
 import pandas
@@ -10,6 +11,8 @@ from .base_video_dataset import BaseVideoDataset
 from lib.train.data import jpeg4py_loader_w_failsafe
 from lib.train.admin import env_settings
 from lib.train.dataset.depth_utils import get_x_frame
+
+_logger = logging.getLogger(__name__)
 
 
 class VisEvent(BaseVideoDataset):
@@ -100,10 +103,10 @@ class VisEvent(BaseVideoDataset):
 
         try:
             vis_path = vis_img_files[frame_id]
-        except:
-            print(f"seq_path: {seq_path}")
-            print(f"vis_img_files: {vis_img_files}")
-            print(f"frame_id: {frame_id}")
+        except IndexError as exc:
+            _logger.error("VisEvent frame index out of range: seq_path=%s frame_id=%s num_frames=%s",
+                          seq_path, frame_id, len(vis_img_files))
+            raise IndexError("VisEvent frame index out of range") from exc
 
         event_path = vis_path.replace('vis_imgs', 'event_imgs')
 

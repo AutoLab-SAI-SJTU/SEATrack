@@ -1,10 +1,9 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from timm.models.layers import trunc_normal_, Mlp
+from lib.models.layers.timm_compat import DropPath, Mlp, trunc_normal_
 
 from lib.models.layers.rpe import generate_2d_concatenated_self_attention_relative_positional_encoding_index
-from timm.models.layers import Mlp, DropPath
 import math
 from typing import Optional, List
 
@@ -80,9 +79,11 @@ class HMoE(nn.Module):
         self.D_temp = nn.Parameter(torch.zeros(1)+1.0)
         self.C_temp = nn.Parameter(torch.zeros(1)+1.0)
         self.linear2 = LoRP(hid_dim=hid_dim)
+        self.router_stats = {}
 
     def forward(self, x, mode=None):
         B, N, D = x.shape
+        self.router_stats = {}
         
         thi = self.gate_thi.unsqueeze(0).expand(B, -1, -1)
         
@@ -92,6 +93,16 @@ class HMoE(nn.Module):
         Dispatch = F.softmax(logits/self.D_temp, dim=1) # (B, N*slots, E*S)列向量是一个sequence的所有token关于一个slot的得分，所有token根据列向量的值做加权和，作为该slot的输入
         Combine = logits.reshape(B, N, self.size_slots, self.size_slots*self.size_experts).sum(dim=2).reshape(B, N, self.size_experts, self.size_slots).sum(dim=-1) # (B, N, E)
         Combine = F.softmax(Combine/self.C_temp, dim=-1) # (B, N, E)行向量是一个token对一个expert的贡献度，所有expert的输出根据贡献度加权和得到该token的最终输出
+        with torch.no_grad():
+            combine_detached = Combine.detach().clamp_min(1e-9)
+            entropy = -(combine_detached * combine_detached.log()).sum(dim=-1)
+            entropy = entropy / math.log(max(self.size_experts, 2))
+            expert_load = combine_detached.mean(dim=(0, 1))
+            self.router_stats = {
+                "Router/entropy": entropy.mean(),
+                "Router/expert_load_max": expert_load.max(),
+                "Router/expert_load_std": expert_load.std(unbiased=False),
+            }
 
         experts_inputs = torch.bmm(Dispatch.transpose(1, 2), x).reshape(B, self.size_experts, self.size_slots, D//self.size_slots) # (B, E*S, D) -> (B, E, S, D)
         # experts_outputs = torch.stack([self.experts[i](experts_inputs[:, i]) for i in range(self.size_experts)], dim=1).reshape(B, self.size_experts, -1) # (B, E, D)
@@ -337,4 +348,4 @@ class Attention_talking_head(nn.Module):
         x = (attn @ v).transpose(1, 2).reshape(B, N, C)
         x = self.proj(x)
         x = self.proj_drop(x)
-        return x   
+        return x

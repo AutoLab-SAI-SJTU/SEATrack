@@ -1,4 +1,5 @@
 import os
+import logging
 from .base_video_dataset import BaseVideoDataset
 from lib.train.data import jpeg4py_loader
 import torch
@@ -8,6 +9,8 @@ from lib.train.admin import env_settings
 from lib.train.dataset.COCO_tool import COCO
 from lib.utils.lmdb_utils import decode_img, decode_json
 import time
+
+_logger = logging.getLogger(__name__)
 
 class MSCOCOSeq_lmdb(BaseVideoDataset):
     """ The COCO dataset. COCO is an image dataset. Thus, we treat each image as a sequence of length 1.
@@ -51,10 +54,10 @@ class MSCOCOSeq_lmdb(BaseVideoDataset):
         self.anno_path = 'annotations/instances_{}{}.json'.format(split, version)
 
         # Load the COCO set.
-        print('loading annotations into memory...')
+        _logger.info("Loading annotations into memory")
         tic = time.time()
         coco_json = decode_json(root, self.anno_path)
-        print('Done (t={:0.2f}s)'.format(time.time() - tic))
+        _logger.info("Annotations loaded in %.2fs", time.time() - tic)
 
         self.coco_set = COCO(coco_json)
 

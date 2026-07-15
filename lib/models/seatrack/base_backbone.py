@@ -1,13 +1,16 @@
 from functools import partial
+import logging
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from timm.models.vision_transformer import resize_pos_embed
-from timm.models.layers import DropPath, to_2tuple, trunc_normal_
+from lib.models.layers.timm_compat import DropPath, to_2tuple, trunc_normal_
 
 from lib.models.layers.patch_embed import PatchEmbed
 from lib.models.seatrack.utils import combine_tokens, recover_tokens
+
+_logger = logging.getLogger(__name__)
 
 
 class BaseBackbone(nn.Module):
@@ -50,7 +53,7 @@ class BaseBackbone(nn.Module):
 
         # resize patch embedding
         if new_patch_size != self.patch_size:
-            print('Inconsistent Patch Size With The Pretrained Weights, Interpolate The Weight!')
+            _logger.info("Inconsistent patch size with the pretrained weights. Interpolating patch embedding.")
             old_patch_embed = {}
             for name, param in self.patch_embed.named_parameters():
                 if 'weight' in name:

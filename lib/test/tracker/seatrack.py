@@ -18,7 +18,7 @@ class SEATrack(BaseTracker):
     def __init__(self, params, mode=None):
         super(SEATrack, self).__init__(params)
         network = build_seatrack(params.cfg, training=False)
-        network.load_state_dict(torch.load(self.params.checkpoint, map_location='cpu')['net'], strict=True)
+        network.load_state_dict(torch.load(self.params.checkpoint, map_location='cpu', weights_only=False)['net'], strict=True)
         self.cfg = params.cfg
         self.network = network.cuda()
         if self.params.task in ['rgbt', 'rgbd']:

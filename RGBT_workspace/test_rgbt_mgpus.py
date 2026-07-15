@@ -4,9 +4,10 @@ import sys
 from os.path import join, isdir, abspath, dirname
 import numpy as np
 import argparse
-prj = join(dirname(__file__), '..')
+prj = abspath(join(dirname(__file__), '..'))
 if prj not in sys.path:
     sys.path.append(prj)
+dataset_root = join(prj, 'datasets')
 
 from lib.test.tracker.ostrack import OSTrack
 from lib.test.tracker.seatrack import SEATrack
@@ -72,8 +73,7 @@ def run_sequence(seq_name, seq_home, dataset_name, yaml_name, num_gpu=1, epoch=3
     # save_name = '{}'.format(yaml_name)
     save_folder = f'./RGBT_workspace/{variants}/{dataset_name}/'
     save_path = save_folder + seq_txt + '.txt'
-    if not os.path.exists(save_folder):
-        os.makedirs(save_folder)
+    os.makedirs(save_folder, exist_ok=True)
     if os.path.exists(save_path):
         print(f'-1 {seq_name}')
         return
@@ -167,11 +167,11 @@ if __name__ == '__main__':
         seq_list = [f for f in os.listdir(seq_home) if isdir(join(seq_home,f))]
         seq_list.sort()
     elif dataset_name == 'RGBT234':
-        seq_home = '/data/rgbt234'
+        seq_home = join(dataset_root, 'RGBT234')
         seq_list = [f for f in os.listdir(seq_home) if isdir(join(seq_home,f))]
         seq_list.sort()
     elif dataset_name == 'LasHeR':
-        seq_home = '/data/lasher/testingset'
+        seq_home = join(dataset_root, 'LasHeR', 'testingset')
         seq_list = [f for f in os.listdir(seq_home) if isdir(join(seq_home,f))]
         seq_list.sort()
     elif dataset_name == 'VTUAVST':
@@ -193,7 +193,14 @@ if __name__ == '__main__':
             pool.starmap(run_sequence, sequence_list)
     else:
         seq_list = [args.video] if args.video != '' else seq_list
-        sequence_list = [(s, seq_home, dataset_name, args.yaml_name, args.num_gpus, args.epoch, args.debug, args.script_name) for s in seq_list]
+        sequence_list = [
+            (
+                s, seq_home, dataset_name, args.yaml_name, args.num_gpus,
+                args.epoch, args.debug, args.script_name, args.variants,
+                args.hmoe_rank, args.amglora_rank
+            )
+            for s in seq_list
+        ]
         for seqlist in sequence_list:
             run_sequence(*seqlist)
     print(f"Totally cost {time.time()-start} seconds!")

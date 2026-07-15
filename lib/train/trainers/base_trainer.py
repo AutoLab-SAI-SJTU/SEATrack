@@ -1,9 +1,33 @@
 import os
 import glob
+import random
+
+import numpy as np
 import torch
 import traceback
 from lib.train.admin import multigpu
 from torch.utils.data.distributed import DistributedSampler
+from lib.train.admin.logging_utils import get_train_logger
+
+
+def capture_rng_state():
+    state = {
+        "python": random.getstate(),
+        "numpy": np.random.get_state(),
+        "torch": torch.get_rng_state(),
+    }
+    if torch.cuda.is_available():
+        state["cuda"] = torch.cuda.get_rng_state_all()
+    return state
+
+
+def restore_rng_state(state):
+    random.setstate(state["python"])
+    np.random.set_state(state["numpy"])
+    torch.set_rng_state(state["torch"])
+    if torch.cuda.is_available() and "cuda" in state:
+        for device_index, device_state in enumerate(state["cuda"][:torch.cuda.device_count()]):
+            torch.cuda.set_rng_state(device_state, device=device_index)
 
 
 class BaseTrainer:
@@ -43,18 +67,18 @@ class BaseTrainer:
             self.settings = settings
 
         if self.settings.env.workspace_dir is not None:
+            system_logger = get_train_logger(self.settings, "system")
             self.settings.env.workspace_dir = os.path.expanduser(self.settings.env.workspace_dir)
             '''2021.1.4 New function: specify checkpoint dir''' # todo: assure usage
             if self.settings.save_dir is None:
                 self._checkpoint_dir = os.path.join(self.settings.env.workspace_dir, 'checkpoints')
             else:
                 self._checkpoint_dir = os.path.join(self.settings.save_dir, 'checkpoints')
-            print("checkpoints will be saved to %s" % self._checkpoint_dir)
+            system_logger.info("Checkpoints will be saved to %s", self._checkpoint_dir)
 
             if self.settings.local_rank in [-1, 0]:
                 if not os.path.exists(self._checkpoint_dir):
-                    print("Training with multiple GPUs. checkpoints directory doesn't exist. "
-                          "Create checkpoints directory")
+                    system_logger.info("Checkpoint directory does not exist. Creating %s", self._checkpoint_dir)
                     os.makedirs(self._checkpoint_dir)
         else:
             self._checkpoint_dir = None
@@ -98,17 +122,17 @@ class BaseTrainer:
                             if self.settings.local_rank in [-1, 0]:
                                 self.save_checkpoint()
             except:
-                print('Training crashed at epoch {}'.format(epoch))
+                system_logger = get_train_logger(self.settings, "system")
+                system_logger.error("Training crashed at epoch %s", epoch)
                 if fail_safe:
                     self.epoch -= 1
                     load_latest = True
-                    print('Traceback for the error!')
-                    print(traceback.format_exc())
-                    print('Restarting training from last epoch ...')
+                    system_logger.error("Traceback for the error:\n%s", traceback.format_exc())
+                    system_logger.info("Restarting training from last epoch ...")
                 else:
                     raise
 
-        print('Finished training!')
+        get_train_logger(self.settings, "system").info("Finished training!")
 
     def train_epoch(self):
         raise NotImplementedError
@@ -128,14 +152,16 @@ class BaseTrainer:
             'net_info': getattr(net, 'info', None),
             'constructor': getattr(net, 'constructor', None),
             'optimizer': self.optimizer.state_dict(),
+            'rng_state': capture_rng_state(),
             'stats': self.stats,
             'settings': self.settings
         }
 
         directory = '{}/{}'.format(self._checkpoint_dir, self.settings.project_path)
-        print(directory)
+        system_logger = get_train_logger(self.settings, "system")
+        system_logger.info("Saving checkpoint to %s", directory)
         if not os.path.exists(directory):
-            print("directory doesn't exist. creating...")
+            system_logger.info("Checkpoint project directory does not exist. Creating %s", directory)
             os.makedirs(directory)
 
         # First save as a tmp file
@@ -171,7 +197,7 @@ class BaseTrainer:
             if checkpoint_list:
                 checkpoint_path = checkpoint_list[-1]
             else:
-                print('No matching checkpoint file found')
+                get_train_logger(self.settings, "system").info("No matching checkpoint file found")
                 return
         elif isinstance(checkpoint, int):
             # Checkpoint is the epoch number
@@ -191,7 +217,9 @@ class BaseTrainer:
             raise TypeError
 
         # Load network
-        checkpoint_dict = torch.load(checkpoint_path, map_location='cpu')
+        system_logger = get_train_logger(self.settings, "system")
+        system_logger.info("Loading checkpoint from %s", checkpoint_path)
+        checkpoint_dict = torch.load(checkpoint_path, map_location='cpu', weights_only=False)
 
         assert net_type == checkpoint_dict['net_type'], 'Network is not of correct type.'
 
@@ -204,8 +232,11 @@ class BaseTrainer:
         ignore_fields.extend(['lr_scheduler', 'constructor', 'net_type', 'actor_type', 'net_info'])
 
         # Load all fields
+        rng_state = checkpoint_dict.get("rng_state")
         for key in fields:
             if key in ignore_fields:
+                continue
+            if key == "rng_state":
                 continue
             if key == 'net':
                 net.load_state_dict(checkpoint_dict[key])
@@ -227,6 +258,9 @@ class BaseTrainer:
             for loader in self.loaders:
                 if isinstance(loader.sampler, DistributedSampler):
                     loader.sampler.set_epoch(self.epoch)
+        if rng_state is not None:
+            restore_rng_state(rng_state)
+            system_logger.info("Restored checkpoint RNG state")
         return True
 
     def load_state_dict(self, checkpoint=None, distill=False):
@@ -262,14 +296,15 @@ class BaseTrainer:
             raise TypeError
 
         # Load network
-        print("Loading pretrained model from ", checkpoint_path)
-        checkpoint_dict = torch.load(checkpoint_path, map_location='cpu')
+        system_logger = get_train_logger(self.settings, "system")
+        system_logger.info("Loading pretrained model from %s", checkpoint_path)
+        checkpoint_dict = torch.load(checkpoint_path, map_location='cpu', weights_only=False)
 
         assert net_type == checkpoint_dict['net_type'], 'Network is not of correct type.'
 
         missing_k, unexpected_k = net.load_state_dict(checkpoint_dict["net"], strict=False)
-        print("previous checkpoint is loaded.")
-        print("missing keys: ", missing_k)
-        print("unexpected keys:", unexpected_k)
+        system_logger.info("Previous checkpoint is loaded.")
+        system_logger.info("Missing keys: %s", missing_k)
+        system_logger.info("Unexpected keys: %s", unexpected_k)
 
         return True

@@ -1,6 +1,7 @@
-import os
 import argparse
 import random
+import subprocess
+import sys
 import torch
 
 
@@ -20,6 +21,7 @@ def parse_args():
     parser.add_argument('--script_prv', type=str, help='training script name')
     parser.add_argument('--config_prv', type=str, default='baseline', help='yaml configure file name')
     parser.add_argument('--use_wandb', type=int, choices=[0, 1], default=0)  # whether to use wandb
+    parser.add_argument('--seed', type=int, default=0, help='seed for model and data randomness')
     # for knowledge distillation
     parser.add_argument('--distill', type=int, choices=[0, 1], default=0)  # whether to use knowledge distillation
     parser.add_argument('--script_teacher', type=str, help='teacher script name')
@@ -36,29 +38,57 @@ def parse_args():
     return args
 
 '''" python -m torch.distributed.launch --nproc_per_node %d --master_port %d'''
+
+
+def _append_optional(cmd, flag, value):
+    if value is not None:
+        cmd.extend([flag, str(value)])
+
+
+def _append_common_train_args(cmd, args):
+    cmd.extend([
+        "--script", args.script,
+        "--config", args.config,
+        "--save_dir", args.save_dir,
+        "--seed", str(args.seed),
+        "--use_lmdb", str(args.use_lmdb),
+        "--use_wandb", str(args.use_wandb),
+        "--distill", str(args.distill),
+    ])
+    _append_optional(cmd, "--script_prv", args.script_prv)
+    _append_optional(cmd, "--config_prv", args.config_prv)
+    _append_optional(cmd, "--script_teacher", args.script_teacher)
+    _append_optional(cmd, "--config_teacher", args.config_teacher)
+    return cmd
+
+
 def main():
     args = parse_args()
-    print('args.config ', args.config)
     if args.mode == "single":
-        train_cmd = "python lib/train/run_training.py --script %s --config %s --save_dir %s --use_lmdb %d " \
-                    "--script_prv %s --config_prv %s --distill %d --script_teacher %s --config_teacher %s --use_wandb %d"\
-                    % (args.script, args.config, args.save_dir, args.use_lmdb, args.script_prv, args.config_prv,
-                       args.distill, args.script_teacher, args.config_teacher, args.use_wandb)
+        train_cmd = _append_common_train_args([sys.executable, "lib/train/run_training.py"], args)
     elif args.mode == "multiple":
-        train_cmd = "torchrun --nnodes 1 --nproc_per_node %d --master_port %d lib/train/run_training.py " \
-                    "--script %s --config %s --save_dir %s --use_lmdb %d --script_prv %s --config_prv %s --use_wandb %d " \
-                    "--distill %d --script_teacher %s --config_teacher %s" \
-                    % (args.nproc_per_node, random.randint(10000, 50000), args.script, args.config, args.save_dir, args.use_lmdb, args.script_prv, args.config_prv, args.use_wandb,
-                       args.distill, args.script_teacher, args.config_teacher)
+        train_cmd = [
+            sys.executable, "-m", "torch.distributed.run",
+            "--nnodes", "1",
+            "--nproc_per_node", str(args.nproc_per_node),
+            "--master_port", str(random.randint(10000, 50000)),
+            "lib/train/run_training.py",
+        ]
+        _append_common_train_args(train_cmd, args)
     elif args.mode == "multi_node":
-        train_cmd = "python -m torch.distributed.launch --nproc_per_node %d --master_addr %s --master_port %d --nnodes %d --node_rank %d lib/train/run_training.py " \
-                    "--script %s --config %s --save_dir %s --use_lmdb %d --script_prv %s --config_prv %s --use_wandb %d " \
-                    "--distill %d --script_teacher %s --config_teacher %s" \
-                    % (args.nproc_per_node, args.ip, args.port, args.world_size, args.rank, args.script, args.config, args.save_dir, args.use_lmdb, args.script_prv, args.config_prv, args.use_wandb,
-                       args.distill, args.script_teacher, args.config_teacher)
+        train_cmd = [
+            sys.executable, "-m", "torch.distributed.run",
+            "--nproc_per_node", str(args.nproc_per_node),
+            "--master_addr", args.ip,
+            "--master_port", str(args.port),
+            "--nnodes", str(args.world_size),
+            "--node_rank", str(args.rank),
+            "lib/train/run_training.py",
+        ]
+        _append_common_train_args(train_cmd, args)
     else:
         raise ValueError("mode should be 'single' or 'multiple' or 'multi_node'.")
-    os.system(train_cmd)
+    subprocess.run(train_cmd, check=True)
 
 
 if __name__ == "__main__":

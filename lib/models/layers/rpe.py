@@ -1,6 +1,6 @@
 import torch
 import torch.nn as nn
-from timm.models.layers import trunc_normal_
+from lib.models.layers.timm_compat import trunc_normal_
 
 
 def generate_2d_relative_positional_encoding_index(z_shape, x_shape):

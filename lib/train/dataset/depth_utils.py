@@ -1,7 +1,10 @@
 import pdb
+import logging
 
 import cv2
 import numpy as np
+
+_logger = logging.getLogger(__name__)
 
 
 def get_rgbd_frame(color_path, depth_path, dtype='rgbcolormap', depth_clip=False):
@@ -62,7 +65,7 @@ def get_rgbd_frame(color_path, depth_path, dtype='rgbcolormap', depth_clip=False
         img = cv2.merge((rgb, dp))
 
     else:
-        print('No such dtype !!! ')
+        _logger.error("Unsupported dtype: %s", dtype)
         img = None
 
     return img
@@ -126,7 +129,7 @@ def get_x_frame(color_path, depth_path, dtype='rgbcolormap', depth_clip=False):
         img = cv2.merge((rgb, dp))
 
     else:
-        print('No such dtype !!! ')
+        _logger.error("Unsupported dtype: %s", dtype)
         img = None
 
     return img

@@ -1,7 +1,7 @@
 import torch
 import torch.utils.data.dataloader
 import importlib
-import collections
+import collections.abc as collections_abc
 import warnings
 # from torch._six import string_classes
 string_classes = str
@@ -59,12 +59,12 @@ def ltr_collate(batch):
         return batch
     elif isinstance(batch[0], TensorDict):
         return TensorDict({key: ltr_collate([d[key] for d in batch]) for key in batch[0]})
-    elif isinstance(batch[0], collections.Mapping):
+    elif isinstance(batch[0], collections_abc.Mapping):
         return {key: ltr_collate([d[key] for d in batch]) for key in batch[0]}
     elif isinstance(batch[0], TensorList):
         transposed = zip(*batch)
         return TensorList([ltr_collate(samples) for samples in transposed])
-    elif isinstance(batch[0], collections.Sequence):
+    elif isinstance(batch[0], collections_abc.Sequence):
         transposed = zip(*batch)
         return [ltr_collate(samples) for samples in transposed]
     elif batch[0] is None:
@@ -114,12 +114,12 @@ def ltr_collate_stack1(batch):
         return batch
     elif isinstance(batch[0], TensorDict):
         return TensorDict({key: ltr_collate_stack1([d[key] for d in batch]) for key in batch[0]})
-    elif isinstance(batch[0], collections.Mapping):
+    elif isinstance(batch[0], collections_abc.Mapping):
         return {key: ltr_collate_stack1([d[key] for d in batch]) for key in batch[0]}
     elif isinstance(batch[0], TensorList):
         transposed = zip(*batch)
         return TensorList([ltr_collate_stack1(samples) for samples in transposed])
-    elif isinstance(batch[0], collections.Sequence):
+    elif isinstance(batch[0], collections_abc.Sequence):
         transposed = zip(*batch)
         return [ltr_collate_stack1(samples) for samples in transposed]
     elif batch[0] is None:
@@ -182,7 +182,7 @@ class LTRLoader(torch.utils.data.dataloader.DataLoader):
 
     def __init__(self, name, dataset, training=True, batch_size=1, shuffle=False, sampler=None, batch_sampler=None,
                  num_workers=0, epoch_interval=1, collate_fn=None, stack_dim=0, pin_memory=False, drop_last=False,
-                 timeout=0, worker_init_fn=None):
+                 timeout=0, worker_init_fn=None, generator=None, base_seed=None):
         if collate_fn is None:
             if stack_dim == 0:
                 collate_fn = ltr_collate
@@ -191,11 +191,32 @@ class LTRLoader(torch.utils.data.dataloader.DataLoader):
             else:
                 raise ValueError('Stack dim no supported. Must be 0 or 1.')
 
-        super(LTRLoader, self).__init__(dataset, batch_size, shuffle, sampler, batch_sampler,
-                 num_workers, collate_fn, pin_memory, drop_last,
-                 timeout, worker_init_fn)
+        if generator is None and base_seed is not None:
+            generator = torch.Generator()
+        if generator is not None and base_seed is not None:
+            generator.manual_seed(base_seed)
+
+        super(LTRLoader, self).__init__(
+            dataset=dataset,
+            batch_size=batch_size,
+            shuffle=shuffle,
+            sampler=sampler,
+            batch_sampler=batch_sampler,
+            num_workers=num_workers,
+            collate_fn=collate_fn,
+            pin_memory=pin_memory,
+            drop_last=drop_last,
+            timeout=timeout,
+            worker_init_fn=worker_init_fn,
+            generator=generator,
+        )
 
         self.name = name
         self.training = training
         self.epoch_interval = epoch_interval
         self.stack_dim = stack_dim
+        self.base_seed = base_seed
+
+    def set_epoch(self, epoch):
+        if self.base_seed is not None:
+            self.generator.manual_seed(self.base_seed + epoch)

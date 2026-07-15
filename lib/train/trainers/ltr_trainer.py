@@ -7,9 +7,15 @@ from lib.train.admin import TensorboardWriter
 import torch
 import time
 from torch.utils.data.distributed import DistributedSampler
-from torch.cuda.amp import autocast
-from torch.cuda.amp import GradScaler
+try:
+    from torch.amp import autocast, GradScaler
+    _TORCH_AMP_REQUIRES_DEVICE = True
+except ImportError:
+    from torch.cuda.amp import autocast, GradScaler
+    _TORCH_AMP_REQUIRES_DEVICE = False
 from lib.utils.misc import get_world_size
+from tqdm.auto import tqdm
+from lib.train.admin.logging_utils import get_train_logger
 
 
 class LTRTrainer(BaseTrainer):
@@ -46,7 +52,14 @@ class LTRTrainer(BaseTrainer):
         self.settings = settings
         self.use_amp = use_amp
         # if use_amp:
-        self.scaler = GradScaler(enabled=use_amp)
+        if _TORCH_AMP_REQUIRES_DEVICE:
+            self.scaler = GradScaler("cuda", enabled=use_amp)
+        else:
+            self.scaler = GradScaler(enabled=use_amp)
+        self.train_logger = get_train_logger(self.settings, "train")
+
+    def _show_progress(self):
+        return getattr(self.settings, "local_rank", -1) in (-1, 0)
 
     def _set_default_settings(self):
         # Dict of all default values
@@ -70,59 +83,66 @@ class LTRTrainer(BaseTrainer):
 
         self._init_timing()
 
-        for i, data in enumerate(loader, 1):
-            self.data_read_done_time = time.time()
-            # get inputs
-            if self.move_data_to_gpu:
-                data = data.to(self.device)
+        batch_size = 0
+        progress_desc = "%s epoch %d" % (loader.name, self.epoch)
+        progress_iter = enumerate(loader, 1)
+        with tqdm(progress_iter, total=len(loader), desc=progress_desc,
+                  dynamic_ncols=True, disable=not self._show_progress()) as progress:
+            for i, data in progress:
+                self.data_read_done_time = time.time()
+                # get inputs
+                if self.move_data_to_gpu:
+                    data = data.to(self.device)
 
-            self.data_to_gpu_time = time.time()
+                self.data_to_gpu_time = time.time()
 
-            data['epoch'] = self.epoch
-            data['settings'] = self.settings
-            # forward pass
-            # if not self.use_amp:
-            #     loss, stats = self.actor(data)
-            # else:
-            with autocast(enabled=self.use_amp):
-                loss, stats = self.actor(data)
-
-            # backward pass and update weights
-            if loader.training:
-                self.optimizer.zero_grad()
+                data['epoch'] = self.epoch
+                data['settings'] = self.settings
+                # forward pass
                 # if not self.use_amp:
-                #     loss.backward()
-                #     if self.settings.grad_clip_norm > 0:
-                #         torch.nn.utils.clip_grad_norm_(self.actor.net.parameters(), self.settings.grad_clip_norm)
-                #     self.optimizer.step()
+                #     loss, stats = self.actor(data)
                 # else:
-                    # import ipdb; ipdb.set_trace()
-                    # print(loss)
-                self.scaler.scale(loss).backward()
-                if self.settings.grad_clip_norm > 0:
-                    self.scaler.unscale_(self.optimizer)
-                    torch.nn.utils.clip_grad_norm_(self.actor.net.parameters(), self.settings.grad_clip_norm)
-                self.scaler.step(self.optimizer)
-                self.scaler.update()
+                if _TORCH_AMP_REQUIRES_DEVICE:
+                    amp_context = autocast("cuda", enabled=self.use_amp)
+                else:
+                    amp_context = autocast(enabled=self.use_amp)
+                with amp_context:
+                    loss, stats = self.actor(data)
 
-            # update statistics
-            batch_size = data['template_images'].shape[loader.stack_dim]
-            self._update_stats(stats, batch_size, loader)
+                # backward pass and update weights
+                if loader.training:
+                    self.optimizer.zero_grad()
+                    self.scaler.scale(loss).backward()
+                    if self.settings.grad_clip_norm > 0:
+                        self.scaler.unscale_(self.optimizer)
+                        torch.nn.utils.clip_grad_norm_(self.actor.net.parameters(), self.settings.grad_clip_norm)
+                    self.scaler.step(self.optimizer)
+                    self.scaler.update()
 
-            # print statistics
-            self._print_stats(i, loader, batch_size)
+                # update statistics
+                batch_size = data['template_images'].shape[loader.stack_dim]
+                self._update_stats(stats, batch_size, loader)
+
+                # print statistics
+                self._print_stats(i, loader, batch_size, progress)
 
         # calculate ETA after every epoch
         epoch_time = self.prev_time - self.start_time
-        print("Epoch Time: " + str(datetime.timedelta(seconds=epoch_time)))
-        print("Avg Data Time: %.5f" % (self.avg_date_time / self.num_frames * batch_size))
-        print("Avg GPU Trans Time: %.5f" % (self.avg_gpu_trans_time / self.num_frames * batch_size))
-        print("Avg Forward Time: %.5f" % (self.avg_forward_time / self.num_frames * batch_size))
+        if self.num_frames > 0:
+            self.train_logger.info(
+                "Epoch %d %s summary: epoch_time=%s avg_data_time=%.5f avg_gpu_trans_time=%.5f avg_forward_time=%.5f",
+                self.epoch, loader.name, datetime.timedelta(seconds=epoch_time),
+                self.avg_date_time / self.num_frames * batch_size,
+                self.avg_gpu_trans_time / self.num_frames * batch_size,
+                self.avg_forward_time / self.num_frames * batch_size,
+            )
 
     def train_epoch(self):
         """Do one epoch for each loader."""
         for loader in self.loaders:
             if self.epoch % loader.epoch_interval == 0:
+                if hasattr(loader, "set_epoch"):
+                    loader.set_epoch(self.epoch)
                 # 2021.1.10 Set epoch
                 if isinstance(loader.sampler, DistributedSampler):
                     loader.sampler.set_epoch(self.epoch)
@@ -159,7 +179,7 @@ class LTRTrainer(BaseTrainer):
                 self.stats[loader.name][name] = AverageMeter()
             self.stats[loader.name][name].update(val, batch_size)
 
-    def _print_stats(self, i, loader, batch_size):
+    def _print_stats(self, i, loader, batch_size, progress=None):
         self.num_frames += batch_size
         current_time = time.time()
         batch_fps = batch_size / (current_time - self.prev_time)
@@ -170,6 +190,10 @@ class LTRTrainer(BaseTrainer):
         self.avg_date_time += (self.data_read_done_time - prev_frame_time_backup)
         self.avg_gpu_trans_time += (self.data_to_gpu_time - self.data_read_done_time)
         self.avg_forward_time += current_time - self.data_to_gpu_time
+
+        if progress is not None:
+            progress.set_postfix(self._build_progress_postfix(loader, average_fps, batch_fps, batch_size),
+                                 refresh=False)
 
         if i % self.settings.print_interval == 0 or i == loader.__len__():
             print_str = '[%s: %d, %d / %d] ' % (loader.name, self.epoch, i, loader.__len__())
@@ -190,10 +214,22 @@ class LTRTrainer(BaseTrainer):
                     # else:
                     #     print_str += '%s: %r  ,  ' % (name, val)
 
-            print(print_str[:-5])
-            log_str = print_str[:-5] + '\n'
-            with open(self.settings.log_file, 'a') as f:
-                f.write(log_str)
+            self.train_logger.info(print_str[:-5])
+
+    def _build_progress_postfix(self, loader, average_fps, batch_fps, batch_size):
+        postfix = {
+            "fps": "%.1f" % average_fps,
+            "batch_fps": "%.1f" % batch_fps,
+            "data": "%.3f" % (self.avg_date_time / self.num_frames * batch_size),
+            "fwd": "%.3f" % (self.avg_forward_time / self.num_frames * batch_size),
+        }
+        loader_stats = self.stats.get(loader.name)
+        if loader_stats is not None:
+            for name in ("Loss/total", "Loss/giou", "Loss/l1", "IoU"):
+                val = loader_stats.get(name)
+                if hasattr(val, "avg"):
+                    postfix[name.split("/")[-1]] = "%.4f" % val.avg
+        return postfix
 
     def _stats_new_epoch(self):
         # Record learning rate

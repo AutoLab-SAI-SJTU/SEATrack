@@ -4,9 +4,10 @@ import sys
 from os.path import join, isdir, abspath, dirname
 import numpy as np
 import argparse
-prj = join(dirname(__file__), '..')
+prj = abspath(join(dirname(__file__), '..'))
 if prj not in sys.path:
     sys.path.append(prj)
+dataset_root = join(prj, 'datasets')
 
 from lib.test.tracker.seatrack import SEATrack
 import lib.test.parameter.seatrack as rgbe_prompt_params
@@ -130,9 +131,13 @@ if __name__ == '__main__':
     # path initialization
     seq_list = None
     if dataset_name == 'VisEvent':
-        seq_home = '/data/visevent/testingset'
-        with open(join(seq_home, 'testlist.txt'), 'r') as f:
-            seq_list = f.read().splitlines()
+        seq_home = join(dataset_root, 'VisEvent', 'test_subset')
+        test_list_path = join(seq_home, 'testlist.txt')
+        if os.path.exists(test_list_path):
+            with open(test_list_path, 'r') as f:
+                seq_list = f.read().splitlines()
+        else:
+            seq_list = [f for f in os.listdir(seq_home) if isdir(join(seq_home, f))]
         seq_list.sort()
     else:
         raise ValueError("Error dataset!")
@@ -145,7 +150,14 @@ if __name__ == '__main__':
             pool.starmap(run_sequence, sequence_list)
     else:
         seq_list = [args.video] if args.video != '' else seq_list
-        sequence_list = [(s, seq_home, dataset_name, args.yaml_name, args.num_gpus, args.epoch, args.debug, args.script_name) for s in seq_list]
+        sequence_list = [
+            (
+                s, seq_home, dataset_name, args.yaml_name, args.num_gpus,
+                args.epoch, args.debug, args.script_name, args.variants,
+                args.hmoe_rank, args.amglora_rank
+            )
+            for s in seq_list
+        ]
         for seqlist in sequence_list:
             run_sequence(*seqlist)
     print(f"Totally cost {time.time()-start} seconds!")

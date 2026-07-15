@@ -99,10 +99,7 @@ class SEATrackActor(BaseActor):
         gt_boxes_vec = box_xywh_to_xyxy(gt_bbox)[:, None, :].repeat((1, num_queries, 1)).view(-1, 4).clamp(min=0.0,
                                                                                                            max=1.0)  # (B,4) --> (B,1,4) --> (BN,4)
         # compute giou and iou
-        try:
-            giou_loss, iou = self.objective['giou'](pred_boxes_vec, gt_boxes_vec)  # (BN,4) (BN,4)
-        except:
-            giou_loss, iou = torch.tensor(0.0).cuda(), torch.tensor(0.0).cuda()
+        giou_loss, iou = self.objective['giou'](pred_boxes_vec, gt_boxes_vec)  # (BN,4) (BN,4)
         # compute l1 loss
         l1_loss = self.objective['l1'](pred_boxes_vec, gt_boxes_vec)  # (BN,4) (BN,4)
         # compute location loss
@@ -132,6 +129,12 @@ class SEATrackActor(BaseActor):
                       "Loss/location": location_loss.item(),
                     #   "Loss/ce_loss": ce_loss.item(),
                       "IoU": mean_iou.item()}
+            for stats_key in ("gratrack_stats", "bilift_stats"):
+                for name, value in pred_dict.get(stats_key, {}).items():
+                    if torch.is_tensor(value):
+                        status[name] = value.detach().mean().item()
+                    elif isinstance(value, (float, int)):
+                        status[name] = float(value)
             return loss, status
         else:
             return loss

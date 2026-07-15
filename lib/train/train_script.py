@@ -18,6 +18,7 @@ from lib.train.actors import SEATrackActor
 import importlib
 
 from ..utils.focal_loss import FocalLoss
+from lib.train.admin.logging_utils import get_train_logger, setup_train_logging
 
 
 def run(settings):
@@ -29,28 +30,27 @@ def run(settings):
     config_module = importlib.import_module("lib.config.%s.config" % settings.script_name)
     cfg = config_module.cfg
     config_module.update_config_from_file(settings.cfg_file)
+    setup_train_logging(settings)
+    system_logger = get_train_logger(settings, "system")
+    config_logger = get_train_logger(settings, "config")
+    model_logger = get_train_logger(settings, "model")
+    system_logger.info("Starting training: script=%s config=%s cfg_file=%s save_dir=%s",
+                       settings.script_name, settings.config_name, settings.cfg_file, settings.save_dir)
     if settings.local_rank in [-1, 0]:
-        print("New configuration is shown below.")
+        config_logger.info("New configuration is shown below.")
         for key in cfg.keys():
-            print("%s configuration:" % key, cfg[key])
-            print('\n')
+            config_logger.info("%s configuration: %s", key, cfg[key])
 
     # update settings based on cfg
     update_settings(settings, cfg)
-
-    # Record the training log
-    log_dir = os.path.join(settings.save_dir, 'logs')
-    if settings.local_rank in [-1, 0]:
-        if not os.path.exists(log_dir):
-            os.makedirs(log_dir)
-    settings.log_file = os.path.join(log_dir, "%s-%s.log" % (settings.script_name, settings.config_name))
 
     # Build dataloaders
     loader_train, loader_val = build_dataloaders(cfg, settings)
 
     # Create network
     if settings.script_name == "seatrack":
-        net = build_seatrack(cfg)
+        net = build_seatrack(cfg, settings=settings)
+        model_logger.info("Built model: %s", type(net).__name__)
     else:
         raise ValueError("illegal script name")
 
@@ -76,7 +76,7 @@ def run(settings):
         raise ValueError("illegal script name")
 
     # Optimizer, parameters, and learning rates
-    optimizer, lr_scheduler = get_optimizer_scheduler(net, cfg)
+    optimizer, lr_scheduler = get_optimizer_scheduler(net, cfg, settings=settings)
     use_amp = getattr(cfg.TRAIN, "AMP", False)
     settings.save_epoch_interval = getattr(cfg.TRAIN, "SAVE_EPOCH_INTERVAL", 1)
     settings.save_last_n_epoch = getattr(cfg.TRAIN, "SAVE_LAST_N_EPOCH", 1)
